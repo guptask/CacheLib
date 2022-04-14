@@ -285,8 +285,8 @@ struct ReaperStats {
   uint64_t avgTraversalTimeMs{0};
 };
 
-// Stats for background evictor
-struct BackgroundEvictorStats {
+// Eviction Stats
+struct BackgroundEvictionStats {
   // the number of items this worker evicted by looking at pools/classes stats
   uint64_t numEvictedItems{0};
 
@@ -300,6 +300,8 @@ struct BackgroundEvictorStats {
 
 
 
+  // eviction size
+  uint64_t evictionSize{0};
 };
 
 // CacheMetadata type to export
@@ -322,6 +324,9 @@ struct Stats;
 // Stats that apply globally in cache and
 // the ones that are aggregated over all pools
 struct GlobalCacheStats {
+  // background eviction stats
+  BackgroundEvictionStats evictionStats;
+
   // number of calls to CacheAllocator::find
   uint64_t numCacheGets{0};
 
@@ -486,9 +491,6 @@ struct GlobalCacheStats {
 
   // stats related to the reaper
   ReaperStats reaperStats;
-  
-  // stats related to the background evictor
-  BackgroundEvictorStats backgroundEvictorStats;
 
   uint64_t numNvmRejectsByExpiry{};
   uint64_t numNvmRejectsByClean{};
