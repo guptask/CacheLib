@@ -36,8 +36,11 @@ struct BackgroundEvictionStats {
   // number of times we went executed the thread //TODO: is this def correct?
   uint64_t nTraversals{0};
 
+  // number of classes
+  uint64_t nClasses{0};
+
   // size of evicted items
-  uint64_t evictionSize;
+  uint64_t evictionSize{0};
 };
 
 struct Stats {
@@ -140,6 +143,8 @@ struct Stats {
                             backgndEvicStats.nEvictedItemsFromSchedule) << std::endl;
     out << folly::sformat("Tier 0 Background Traversals : {:,}",
                             backgndEvicStats.nTraversals) << std::endl;
+    out << folly::sformat("Tier 0 Total Classes : {:,}",
+                            backgndEvicStats.nClasses) << std::endl;
     out << folly::sformat("Tier 0 Background Evicted Size : {:,}",
                             backgndEvicStats.evictionSize) << std::endl;
 

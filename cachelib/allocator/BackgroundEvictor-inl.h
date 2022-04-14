@@ -96,7 +96,7 @@ BackgroundEvictionStats BackgroundEvictor<CacheT>::getStats() const noexcept {
   BackgroundEvictionStats evicStats;
   evicStats.numEvictedItems = stats.numEvictedItems.get();
   evicStats.numEvictedItemsFromSchedule = stats.numEvictedItemsFromSchedule.get();
-  evicStats.numTraversals = stats.numTraversals.get();
+  evicStats.runCount = stats.numTraversals.get();
   evicStats.evictionSize = stats.evictionSize.get();
   evicStats.totalClasses = stats.totalClasses.get();
 

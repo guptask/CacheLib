@@ -532,7 +532,9 @@ Stats Cache<Allocator>::getStats() const {
   ret.backgndEvicStats.nEvictedItemsFromSchedule =
             cacheStats.evictionStats.numEvictedItemsFromSchedule;
   ret.backgndEvicStats.nTraversals =
-            cacheStats.evictionStats.numTraversals;
+            cacheStats.evictionStats.runCount;
+  ret.backgndEvicStats.nClasses =
+            cacheStats.evictionStats.totalClasses;
   ret.backgndEvicStats.evictionSize =
             cacheStats.evictionStats.evictionSize;
 
@@ -540,10 +542,6 @@ Stats Cache<Allocator>::getStats() const {
   ret.numItems = aggregate.numItems();
   ret.allocAttempts = cacheStats.allocAttempts;
   ret.allocFailures = cacheStats.allocFailures;
-  
-  ret.numBackgroundEvictions = cacheStats.backgroundEvictorStats.numEvictedItems;
-  ret.numBackgroundEvictionsFromSchedule = cacheStats.backgroundEvictorStats.numEvictedItemsFromSchedule;
-  ret.numBackgroundEvictorRuns = cacheStats.backgroundEvictorStats.runCount;
 
   ret.numCacheGets = cacheStats.numCacheGets;
   ret.numCacheGetMiss = cacheStats.numCacheGetMiss;

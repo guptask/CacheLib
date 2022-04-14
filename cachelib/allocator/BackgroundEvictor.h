@@ -44,10 +44,13 @@ struct BackgroundEvictorStats {
   AtomicCounter numEvictedItems{0};
 
   // items evicted from schedule
-  AtomicCounter numEvictedItemsFromSchedule;
+  AtomicCounter numEvictedItemsFromSchedule{0};
 
   // traversals
   AtomicCounter numTraversals{0};
+
+  // total class size
+  AtomicCounter totalClasses{0};
 
   // item eviction size
   AtomicCounter evictionSize{0};
@@ -77,6 +80,8 @@ class BackgroundEvictor : public PeriodicWorker {
   std::map<uint32_t,uint64_t> getClassStats() const noexcept;
 
  private:
+   std::map<uint32_t,uint64_t> evictions_per_class_;
+
   // cache allocator's interface for evicting
   
   using Item = typename Cache::Item;

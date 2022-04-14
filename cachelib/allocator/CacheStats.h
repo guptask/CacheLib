@@ -296,9 +296,8 @@ struct BackgroundEvictionStats {
   // number of times we went executed the thread //TODO: is this def correct?
   uint64_t runCount{0};
 
+  // total number of classes
   uint64_t totalClasses{0};
-
-
 
   // eviction size
   uint64_t evictionSize{0};
