@@ -1782,15 +1782,19 @@ class CacheAllocator : public CacheBase {
     while (evictions < batch && itr) {
       Item* candidate = itr.get();
       if (candidate == NULL) {
+          itr.destroy();
           break;
       }
+      mmContainer.remove(itr);
+      itr.destroy();
+
       // for chained items, the ownership of the parent can change. We try to
       // evict what we think as parent and see if the eviction of parent
       // recycles the child we intend to.
       
-      ItemHandle toReleaseHandle = tryEvictToNextMemoryTier(tid, pid, itr);
+      ItemHandle toReleaseHandle = tryEvictToNextMemoryTier(tid, pid, candidate);
       if (!toReleaseHandle) {
-        ++itr;
+        mmContainer.add(*candidate);
       } else {
         if (toReleaseHandle->hasChainedItem()) {
           (*stats_.chainedItemEvictions)[pid][cid].inc();
@@ -1819,6 +1823,7 @@ class CacheAllocator : public CacheBase {
                               /* isNascent */ true);
         XDCHECK(res == ReleaseRes::kReleased);
       } 
+      itr.resetToBegin(); //move to next item in both cases (fail or succeed)
     }
 
     // Invalidate iterator since later on we may use this mmContainer
