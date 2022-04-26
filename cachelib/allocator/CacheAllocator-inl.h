@@ -1001,7 +1001,8 @@ bool CacheAllocator<CacheTrait>::replaceInMMContainer(Item& oldItem,
   if (&oldContainer == &newContainer) {
     return oldContainer.replace(oldItem, newItem);
   } else {
-    return oldContainer.remove(oldItem) && newContainer.add(newItem);
+    oldContainer.remove(oldItem);
+    return newContainer.add(newItem);
   }
 }
 
@@ -1474,19 +1475,26 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
     ++searchTries;
 
     Item* candidate = itr.get();
-    // for chained items, the ownership of the parent can change. We try to
-    // evict what we think as parent and see if the eviction of parent
-    // recycles the child we intend to.
-    
-    ItemHandle toReleaseHandle = tryEvictToNextMemoryTier(tid, pid, itr);
+    ItemHandle toReleaseHandle{};
+
+    if (tid == 0) {
+      mmContainer.remove(itr);
+      itr.destroy();
+      toReleaseHandle = tryEvictToNextMemoryTier(tid, pid, candidate);
+    }
+
     bool movedToNextTier = false;
     if(toReleaseHandle) {
       movedToNextTier = true;
-    } else {
+    } else if (itr) {
       toReleaseHandle =
           itr->isChainedItem()
               ? advanceIteratorAndTryEvictChainedItem(tid, pid, itr)
               : advanceIteratorAndTryEvictRegularItem(tid, pid, mmContainer, itr);
+
+      // Invalidate iterator since later on we may use this mmContainer
+      // again, which cannot be done unless we drop this iterator
+      itr.destroy();
     }
 
     if (toReleaseHandle) {
@@ -1495,10 +1503,6 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
       } else {
         (*stats_.regularItemEvictions)[pid][cid].inc();
       }
-
-      // Invalidate iterator since later on we may use this mmContainer
-      // again, which cannot be done unless we drop this iterator
-      itr.destroy();
 
       // we must be the last handle and for chained items, this will be
       // the parent.
@@ -1527,6 +1531,12 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
     // from the beginning again
     if (!itr) {
       itr.resetToBegin();
+    }
+
+    if (movedToNextTier) {
+      // Put the item back to the MMContainer so it can be evicted in future.
+      // XXX: add it to tail somehow
+      mmContainer.add(*candidate);
     }
   }
   return nullptr;
