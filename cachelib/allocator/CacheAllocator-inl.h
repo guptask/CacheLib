@@ -1477,7 +1477,8 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
     Item* candidate = itr.get();
     ItemHandle toReleaseHandle{};
 
-    if (tid == 0) {
+    TierId nid = tid++;
+    if (nid < numTiers_) {
       mmContainer.remove(itr);
       itr.destroy();
       toReleaseHandle = tryEvictToNextMemoryTier(tid, pid, candidate);
@@ -1528,11 +1529,9 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
     }
 
 
-    if (!movedToNextTier) {
-      // Put the item back to the MMContainer so it can be evicted in future.
-      // XXX: add it to tail somehow
-      mmContainer.add(*candidate);
-    }
+    // Put the item back to the MMContainer so it can be evicted in future.
+    // XXX: add it to tail somehow
+    mmContainer.add(*candidate);
     
     // If we destroyed the itr to possibly evict and failed, we restart
     // from the beginning again
