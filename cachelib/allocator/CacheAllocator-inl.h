@@ -1527,17 +1527,16 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
       }
     }
 
-    // If we destroyed the itr to possibly evict and failed, we restart
-    // from the beginning again
-    if (!itr) {
-      itr.resetToBegin();
-    }
 
-    if (movedToNextTier) {
+    if (!movedToNextTier) {
       // Put the item back to the MMContainer so it can be evicted in future.
       // XXX: add it to tail somehow
       mmContainer.add(*candidate);
     }
+    
+    // If we destroyed the itr to possibly evict and failed, we restart
+    // from the beginning again
+    itr.resetToBegin();
   }
   return nullptr;
 }
