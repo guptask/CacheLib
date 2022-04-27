@@ -1469,6 +1469,7 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
   // or until the search limit has been exhausted
   unsigned int searchTries = 0;
   auto itr = mmContainer.getEvictionIterator();
+  TierId nid = tid++;
   while ((config_.evictionSearchTries == 0 ||
           config_.evictionSearchTries > searchTries) &&
          itr) {
@@ -1477,7 +1478,6 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
     Item* candidate = itr.get();
     ItemHandle toReleaseHandle{};
 
-    TierId nid = tid++;
     if (nid < numTiers_) {
       mmContainer.remove(itr);
       itr.destroy();
@@ -1529,9 +1529,11 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
     }
 
 
-    // Put the item back to the MMContainer so it can be evicted in future.
-    // XXX: add it to tail somehow
-    mmContainer.add(*candidate);
+    if (nid < numTiers_) {
+        // Put the item back to the MMContainer so it can be evicted in future.
+        // XXX: add it to tail somehow
+        mmContainer.add(*candidate);
+    }
     
     // If we destroyed the itr to possibly evict and failed, we restart
     // from the beginning again
