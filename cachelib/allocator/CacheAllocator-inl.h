@@ -1001,8 +1001,7 @@ bool CacheAllocator<CacheTrait>::replaceInMMContainer(Item& oldItem,
   if (&oldContainer == &newContainer) {
     return oldContainer.replace(oldItem, newItem);
   } else {
-    oldContainer.remove(oldItem);
-    return newContainer.add(newItem);
+    return oldContainer.remove(oldItem) && newContainer.add(newItem);
   }
 }
 
@@ -1464,7 +1463,6 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
   // or until the search limit has been exhausted
   unsigned int searchTries = 0;
   auto itr = mmContainer.getEvictionIterator();
-  TierId nid = tid++;
   while ((config_.evictionSearchTries == 0 ||
           config_.evictionSearchTries > searchTries) &&
          itr) {
