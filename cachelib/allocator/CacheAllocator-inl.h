@@ -1482,7 +1482,7 @@ CacheAllocator<CacheTrait>::findEviction(TierId tid, PoolId pid, ClassId cid) {
     bool movedToNextTier = false;
     if(toReleaseHandle) {
       movedToNextTier = true;
-    } else if (itr) {
+    } else {
       toReleaseHandle =
           candidate->isChainedItem()
                           ? tryEvictChainedItem(*candidate)
