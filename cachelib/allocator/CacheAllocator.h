@@ -1775,17 +1775,20 @@ class CacheAllocator : public CacheBase {
   size_t traverseAndEvictItems(unsigned int tid, unsigned int pid, unsigned int cid, size_t batch) {
     auto& mmContainer = getMMContainer(tid, pid, cid);
     size_t evictions = 0;
+    size_t evictionCandidates = 0;
+    std::vector<Item*> candidates;
     auto itr = mmContainer.getEvictionIterator();
-
-    while (evictions < batch && itr) {
+    while (evictionCandidates < batch && itr) {
       Item* candidate = itr.get();
       if (candidate == NULL) {
-          itr.destroy();
           break;
       }
       mmContainer.remove(itr);
-      itr.destroy();
-
+      candidates.push_back(candidate);
+      evictionCandidates++;
+    }
+    itr.destroy();
+    for (Item *candidate : candidates) {
       // for chained items, the ownership of the parent can change. We try to
       // evict what we think as parent and see if the eviction of parent
       // recycles the child we intend to.
@@ -1821,12 +1824,8 @@ class CacheAllocator : public CacheBase {
                               /* isNascent */ true);
         XDCHECK(res == ReleaseRes::kReleased);
       } 
-      itr.resetToBegin(); //move to next item in both cases (fail or succeed)
     }
 
-    // Invalidate iterator since later on we may use this mmContainer
-    // again, which cannot be done unless we drop this iterator
-    itr.destroy();
     return evictions;
   }
 
