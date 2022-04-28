@@ -1580,24 +1580,22 @@ class CacheAllocator : public CacheBase {
   // @return An evicted item or nullptr  if there is no suitable candidate.
   Item* findEviction(TierId tid, PoolId pid, ClassId cid);
 
-  // Advance the current iterator and try to evict a regular item
+  // Try to evict a regular item.
   //
   // @param  mmContainer  the container to look for evictions.
-  // @param  itr          iterator holding the item
+  // @param  item         item to evict
   //
   // @return  valid handle to regular item on success. This will be the last
   //          handle to the item. On failure an empty handle.
-  ItemHandle advanceIteratorAndTryEvictRegularItem(TierId tid, PoolId pid, MMContainer& mmContainer,
-                                                   EvictionIterator& itr);
+  ItemHandle tryEvictRegularItem(MMContainer& mmContainer, Item& item);
 
-  // Advance the current iterator and try to evict a chained item
-  // Iterator may also be reset during the course of this function
+  // Try to evict a chained item.
   //
-  // @param  itr          iterator holding the item
+  // @param  item         item to evict
   //
   // @return  valid handle to the parent item on success. This will be the last
   //          handle to the item
-  ItemHandle advanceIteratorAndTryEvictChainedItem(TierId tid, PoolId pid, EvictionIterator& itr);
+  ItemHandle tryEvictChainedItem(Item& item);
 
   // Try to move the item down to the next memory tier
   //
