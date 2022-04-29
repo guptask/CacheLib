@@ -135,7 +135,7 @@ struct Stats {
       out << folly::sformat("Hit Ratio     : {:6.2f}%", overallHitRatio)
           << std::endl;
 
-      if (FLAGS_report_api_latency) {
+      if (FLAGS_report_api_latency || 1) {
         auto printLatencies =
             [&out](folly::StringPiece cat,
                    const util::PercentileStats::Estimates& latency) {
@@ -288,12 +288,12 @@ struct Stats {
       }
     }
     
-    if (!backgroundEvictionClasses.empty()) {
-      out << "== Class Background Eviction Counters Map ==" << std::endl;
-      for (const auto& it : backgroundEvictionClasses) {
-        out << it.first << "  :  " << it.second << std::endl;
-      }
-    }
+    //if (!backgroundEvictionClasses.empty()) {
+    //  out << "== Class Background Eviction Counters Map ==" << std::endl;
+    //  for (const auto& it : backgroundEvictionClasses) {
+    //    out << it.first << "  :  " << it.second << std::endl;
+    //  }
+    //}
 
     if (numRamDestructorCalls > 0 || numNvmDestructorCalls > 0) {
       out << folly::sformat("Destructor executed from RAM {}, from NVM {}",
