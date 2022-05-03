@@ -130,7 +130,7 @@ struct Stats {
     
     out << folly::sformat("Background Tier 0 Total Classes Searched : {:,}", numBackgroundEvictorClasses) << std::endl;
 
-    if (numCacheGets > 0) {
+    if (numCacheGets >= 0) {
       out << folly::sformat("Cache Gets    : {:,}", numCacheGets) << std::endl;
       out << folly::sformat("Hit Ratio     : {:6.2f}%", overallHitRatio)
           << std::endl;
