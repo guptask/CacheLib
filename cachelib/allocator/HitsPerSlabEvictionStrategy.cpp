@@ -14,26 +14,20 @@
  * limitations under the License.
  */
 
-#pragma once
+#include "cachelib/allocator/HitsPerSlabEvictionStrategy.h"
 
-#include "cachelib/allocator/Cache.h"
-#include "cachelib/allocator/BackgroundEvictorStrategy.h"
+#include <folly/logging/xlog.h>
 
 namespace facebook {
 namespace cachelib {
 
-class KeepFreeStrategy : public BackgroundEvictorStrategy {
-public:
-  KeepFreeStrategy(size_t nKeepFree);
-  ~KeepFreeStrategy() {}
-
-  size_t calculateBatchSize(const CacheBase& cache,
-                                       unsigned int tid,
-                                       PoolId pid,
-                                       ClassId cid );
-private:
-  size_t nKeepFree_;
-};
+size_t HitsPerSlabEvictionStrategy::calculateBatchSize(const CacheBase& cache,
+                                                       unsigned int tid,
+                                                       PoolId pid,
+                                                       ClassId cid ) {
+  const auto& mpStats = cache.getPoolByTid(pid,tid).getStats().acStats.at(cid);
+  return std::max(0UL, nKeepFree_ - (mpStats.getTotalFreeMemory() / mpStats.allocSize));
+}
 
 } // namespace cachelib
 } // namespace facebook

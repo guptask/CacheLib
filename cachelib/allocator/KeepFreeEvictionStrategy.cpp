@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Intel and its affiliates.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "cachelib/allocator/FreeThresholdStrategy.h"
+#include "cachelib/allocator/KeepFreeEvictionStrategy.h"
 
 #include <folly/logging/xlog.h>
 
@@ -22,17 +22,15 @@ namespace facebook {
 namespace cachelib {
 
 
+KeepFreeEvictionStrategy::KeepFreeEvictionStrategy(size_t nKeepFree)
+   : nKeepFree_(nKeepFree) {} 
 
-FreeThresholdStrategy::FreeThresholdStrategy(double freeThreshold) 
-    : freeThreshold_(freeThreshold) {}
-
-size_t FreeThresholdStrategy::calculateBatchSize(const CacheBase& cache,
-                                       unsigned int tid,
-                                       PoolId pid,
-                                       ClassId cid ) {
+size_t KeepFreeEvictionStrategy::calculateBatchSize(const CacheBase& cache,
+                                                    unsigned int tid,
+                                                    PoolId pid,
+                                                    ClassId cid ) {
   const auto& mpStats = cache.getPoolByTid(pid,tid).getStats().acStats.at(cid);
-  size_t targetMem = (freeThreshold_ * mpStats.getTotalMemory()) - mpStats.getTotalFreeMemory();
-  return std::max(0UL, targetMem / mpStats.allocSize);
+  return std::max(0UL, nKeepFree_ - (mpStats.getTotalFreeMemory() / mpStats.allocSize));
 }
 
 } // namespace cachelib

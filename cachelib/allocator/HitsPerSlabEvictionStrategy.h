@@ -22,20 +22,17 @@
 namespace facebook {
 namespace cachelib {
 
-
-// Base class for background eviction strategy.
-class FreeThresholdStrategy : public BackgroundEvictorStrategy {
-
+class HitsPerSlabEvictionStrategy : public BackgroundEvictorStrategy {
 public:
-  FreeThresholdStrategy(double freeThreshold);
-  ~FreeThresholdStrategy() {}
+  HitsPerSlabEvictionStrategy() = default;
+  ~HitsPerSlabEvictionStrategy() {}
 
   size_t calculateBatchSize(const CacheBase& cache,
                                        unsigned int tid,
                                        PoolId pid,
                                        ClassId cid );
 private:
-  double freeThreshold_;
+  size_t nKeepFree_;
 };
 
 } // namespace cachelib

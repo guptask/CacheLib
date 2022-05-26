@@ -20,8 +20,9 @@
 #include "cachelib/allocator/LruTailAgeStrategy.h"
 #include "cachelib/allocator/RandomStrategy.h"
 
-#include "cachelib/allocator/KeepFreeStrategy.h"
-#include "cachelib/allocator/FreeThresholdStrategy.h"
+#include "cachelib/allocator/KeepFreeEvictionStrategy.h"
+#include "cachelib/allocator/HitsPerSlabEvictionStrategy.h"
+#include "cachelib/allocator/FreeThresholdEvictionStrategy.h"
 
 namespace facebook {
 namespace cachelib {
@@ -150,13 +151,12 @@ std::shared_ptr<BackgroundEvictorStrategy> CacheConfig::getBackgroundEvictorStra
     return nullptr;
   }
 
-  if (backgroundEvictorStrategy == "free-threshold") {
-    return std::make_shared<FreeThresholdStrategy>(freeThreshold);
-  } else if (backgroundEvictorStrategy == "keep-free") {
-    return std::make_shared<KeepFreeStrategy>(nKeepFree);
-  } else {
-    //default!
-    return std::make_shared<FreeThresholdStrategy>(freeThreshold);
+  if (backgroundEvictorStrategy == "keep-free") {
+    return std::make_shared<KeepFreeiEvictionStrategy>(nKeepFree);
+  } else if (backgroundEvictorStrategy == "hits-per-slab") {
+    return std::make_shared<HitsPerSlabEvictionStrategy>();
+  } else { // default or "free-threshold"
+    return std::make_shared<FreeThresholdiEvictionStrategy>(freeThreshold);
   }
 }
 

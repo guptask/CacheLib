@@ -395,6 +395,9 @@ class CacheAllocatorConfig {
   // if true, uses posix shm; if not, uses sys-v (default)
   bool usePosixShm{false};
 
+  // if true, use DSA
+  bool useDSA{false};
+
   // Attach shared memory to a fixed base address
   void* slabMemoryBaseAddr = nullptr;
 

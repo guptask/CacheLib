@@ -78,6 +78,8 @@
 #include "cachelib/common/Utils.h"
 #include "cachelib/shm/ShmManager.h"
 
+#include <dml/dml.hpp>
+
 namespace facebook {
 namespace cachelib {
 
@@ -163,6 +165,7 @@ class CacheAllocator : public CacheBase {
   using ReadHandle = typename Item::ReadHandle;
   using WriteHandle = typename Item::WriteHandle;
   using ItemHandle = WriteHandle;
+
   template <typename UserType,
             typename Converter =
                 detail::DefaultUserTypeConverter<Item, UserType>>
@@ -1413,6 +1416,12 @@ class CacheAllocator : public CacheBase {
   //              not exist.
   FOLLY_ALWAYS_INLINE ItemHandle findFastImpl(Key key, AccessMode mode);
 
+  template <typename ItemPtr>
+  bool isItemReadyForEviction(ItemPtr& oldItem, ItemHandle& newItemHdl);
+
+  template <typename ItemPtr>
+  ItemHandle completeRegularItemEviction(ItemPtr& oldItem, ItemHandle& newItemHdl);
+
   // Moves a regular item to a different memory tier.
   //
   // @param oldItem     Reference to the item being moved
@@ -1606,7 +1615,7 @@ class CacheAllocator : public CacheBase {
   // @return valid handle to the item. This will be the last
   //         handle to the item. On failure an empty handle.
   template <typename ItemPtr>
-  ItemHandle tryEvictToNextMemoryTier(TierId tid, PoolId pid, ItemPtr& item);
+  ItemHandle tryEvictToNextMemoryTier(TierId tid, PoolId pid, ItemPtr& item, bool doBulkEviction = false);
 
   // Try to move the item down to the next memory tier
   //
@@ -1773,29 +1782,63 @@ class CacheAllocator : public CacheBase {
   // exposed for the background evictor to iterate through the memory and evict
   // in batch. This should improve insertion path for tiered memory config
   size_t traverseAndEvictItems(unsigned int tid, unsigned int pid, unsigned int cid, size_t batch) {
+
     auto& mmContainer = getMMContainer(tid, pid, cid);
-    size_t evictions = 0;
-    size_t evictionCandidates = 0;
-    std::vector<Item*> candidates;
+
+    // Gather the list of items to evict
     auto itr = mmContainer.getEvictionIterator();
-    while (evictionCandidates < batch && itr) {
+    std::vector<Item*> items;
+    while (items.size() < batch && itr) {
       Item* candidate = itr.get();
       if (candidate == NULL) {
-          break;
+        break;
       }
       mmContainer.remove(itr);
-      candidates.push_back(candidate);
-      evictionCandidates++;
+      items.push_back(candidate);
     }
     itr.destroy();
-    for (Item *candidate : candidates) {
+
+    // Populate the handles
+    std::vector<ItemHandle> itemHandles;
+    itemHandles.reserve(items.size());
+    for (auto i = 0U; i < items.size(); i++) {
       // for chained items, the ownership of the parent can change. We try to
       // evict what we think as parent and see if the eviction of parent
       // recycles the child we intend to.
-      
-      ItemHandle toReleaseHandle = tryEvictToNextMemoryTier(tid, pid, candidate);
+      itemHandles[i] = tryEvictToNextMemoryTier(tid, pid, items[i], true);
+    }
+
+    // Do DSA copy or memcpy here for all items
+    if (!config_.useDSA) {
+      for (auto i = 0U; i < items.size(); i++) {
+        Item& oldItem = *items[i];
+        auto& newItemHdl = itemHandles[i];
+        std::memcpy(newItemHdl->getWritableMemory(), oldItem.getMemory(), oldItem.getSize());
+      }
+    } else { // use DSA
+      auto sequence = dml::sequence(items.size(), std::allocator<dml::byte_t>());
+      for(size_t i = 0; i < items.size(); i++) {
+        Item& oldItem = *items[i];
+        auto& newItemHdl = itemHandles[i];
+        dml::const_data_view src_view = dml::make_view(oldItem.getMemory());
+        dml::data_view dst_view = dml::make_view(newItemHdl->getWritableMemory());
+        auto status = sequence.add(dml::mem_copy, src_view, dst_view);
+        if (status != dml::status_code::ok) {
+          throw std::runtime_error("failed to add dml::mem_copy operation to the sequence.");
+        }
+      }
+      auto result = dml::execute<dml::hardware>(dml::batch, sequence);
+      if (result.status != dml::status_code::ok) {
+        throw std::runtime_error("failed to receive confirmation of dml::mem_copy operation.");
+      }
+    }
+
+    // Update the statistics
+    size_t evictions = 0;
+    for (auto i = 0U; i < items.size(); i++) {
+      auto toReleaseHandle = itemHandles[i];
       if (!toReleaseHandle) {
-        mmContainer.add(*candidate);
+        mmContainer.add(items[i]);
       } else {
         if (toReleaseHandle->hasChainedItem()) {
           (*stats_.chainedItemEvictions)[pid][cid].inc();
@@ -1806,7 +1849,7 @@ class CacheAllocator : public CacheBase {
 
         // we must be the last handle and for chained items, this will be
         // the parent.
-        XDCHECK(toReleaseHandle.get() == candidate || candidate->isChainedItem());
+        XDCHECK(toReleaseHandle.get() == items[i] || items[i]->isChainedItem());
         XDCHECK_EQ(1u, toReleaseHandle->getRefCount());
 
         // We manually release the item here because we don't want to
@@ -1825,7 +1868,6 @@ class CacheAllocator : public CacheBase {
         XDCHECK(res == ReleaseRes::kReleased);
       } 
     }
-
     return evictions;
   }
 
