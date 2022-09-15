@@ -279,6 +279,8 @@ class CacheBase {
 
   unsigned getNumTiers() const;
 
+  static bool isMultiTiered() { return numTiers_ > 1 ? true : false; }
+
   unsigned numTiers_ = 1;
 
   // Protect 'poolRebalanceStragtegies_' and `poolResizeStrategies_`
