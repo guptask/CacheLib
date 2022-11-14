@@ -246,7 +246,7 @@ class SlabAllocator {
         static_cast<uint32_t>(reinterpret_cast<const uint8_t*>(ptr) -
                               reinterpret_cast<const uint8_t*>(slab)) /
         allocSize;
-    return CompressedPtr{slabIndex, allocIdx};
+    return CompressedPtr{slabIndex, allocIdx, false};
   }
 
   // uncompress the point and return the raw ptr.  This function never throws
@@ -257,8 +257,8 @@ class SlabAllocator {
       return nullptr;
     }
 
-    const SlabIdx slabIndex = ptr.getSlabIdx();
-    const uint32_t allocIdx = ptr.getAllocIdx();
+    const SlabIdx slabIndex = ptr.getSlabIdx(false);
+    const uint32_t allocIdx = ptr.getAllocIdx(false);
     const Slab* slab = &slabMemoryStart_[slabIndex];
 
 #ifndef NDEBUG
