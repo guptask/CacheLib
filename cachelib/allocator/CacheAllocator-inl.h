@@ -1531,21 +1531,15 @@ bool CacheAllocator<CacheTrait>::beforeRegularItemMoveAsync(
     return true;
   };
 
-  // another thread may have called insertOrReplace() which
-  // could have marked this item as unaccessible causing the
-  // replaceIf() in the access container to fail - in this
-  // case we want to abort the move since the item is no
-  // longer valid
-  if (!accessContainer_->replaceIf(oldItem, *newItemHdl, predicate)) {
-    // the new item handle is no longer moving and other threads
-    // may access it - but in case where we failed to replace in
-    // access container we can give the new item back to the allocator
-    auto ref = newItemHdl->unmarkMoving();
-    if (UNLIKELY(ref == 0)) {
-      const auto res =
-          releaseBackToAllocator(*newItemHdl, RemoveContext::kNormal, false);
-      XDCHECK(res == ReleaseRes::kReleased);
-    }
+  auto replaced = accessContainer_->replaceIf(oldItem, *newItemHdl,
+                                   predicate);
+  // another thread may have called insertOrReplace which could have
+  // marked this item as unaccessible causing the replaceIf
+  // in the access container to fail - in this case we want
+  // to abort the move since the item is no longer valid
+  if (!replaced) {
+    auto& newContainer = getMMContainer(*newItemHdl);
+    newContainer.remove(*newItemHdl);
     return false;
   }
   return true;

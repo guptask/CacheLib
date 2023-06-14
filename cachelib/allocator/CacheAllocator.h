@@ -2012,17 +2012,20 @@ class CacheAllocator : public CacheBase {
   // exposed for the background evictor to iterate through the memory and evict
   // in batch. This should improve insertion path for tiered memory config
   size_t traverseAndEvictItems(unsigned int tid, unsigned int pid, unsigned int cid, size_t batch) {
-auto& mmContainer = getMMContainer(tid, pid, cid);
+    auto& mmContainer = getMMContainer(tid, pid, cid);
     size_t evictions = 0;
     size_t evictionCandidates = 0;
     std::vector<Item*> candidates;
+    std::vector<Item*> candidates_with_alloc;
+    std::vector<WriteHandle> new_items_hdl;
+    std::vector<Item*> new_items;
     candidates.reserve(batch);
+    uint32_t tries = 0;
 
-    size_t tries = 0;
-    mmContainer.withEvictionIterator([tid, pid, cid, &tries, &candidates, &batch, &mmContainer, this](auto &&itr) {
-      while (candidates.size() < batch && itr) {
+    mmContainer.withEvictionIterator([this, tid, pid, cid, &tries,
+                                      &candidates, &batch, &mmContainer](auto &&itr) {
+      while (tries < batch*2 && candidates.size() < batch && itr) {
         tries++;
-        (*stats_.evictionAttempts)[tid][pid][cid].inc();
         Item* candidate = itr.get();
         XDCHECK(candidate);
 
@@ -2039,12 +2042,16 @@ auto& mmContainer = getMMContainer(tid, pid, cid);
       }
     });
 
-    for (Item* candidate : candidates) {
-      auto evictedToNext = tryEvictToNextMemoryTier(*candidate, false, true);
+    if (candidates.size() == 0) {
+        return evictions;
+    }
+
+    for (Item *candidate : candidates) {
+      auto evictedToNext = tryEvictToNextMemoryTier(*candidate, true /* from BgThread */);
       if (!evictedToNext) {
-	auto token = createPutToken(*candidate);
-	auto ret = candidate->markForEvictionWhenMoving();
-	XDCHECK(ret);
+	      auto token = createPutToken(*candidate);
+	      auto ret = candidate->markForEvictionWhenMoving();
+	      XDCHECK(ret);
 
         unlinkItemForEviction(*candidate);
       	// wake up any readers that wait for the move to complete
@@ -2056,17 +2063,38 @@ auto& mmContainer = getMMContainer(tid, pid, cid);
       	  nvmCache_->put(*candidate, std::move(token));
         }
       } else {
-        evictions++;
-      	XDCHECK(!evictedToNext->isMarkedForEviction() && !evictedToNext->isMoving());
-      	XDCHECK(!candidate->isMarkedForEviction() && !candidate->isMoving());
-      	XDCHECK(!candidate->isAccessible());
-      	XDCHECK(candidate->getKey() == evictedToNext->getKey());
-
-        wakeUpWaiters(*candidate, std::move(evictedToNext));
+        candidates_with_alloc.push_back(candidate);
+        new_items.push_back(evictedToNext.get()); //new handle
+        new_items_hdl.push_back(std::move(evictedToNext));
       }
-      XDCHECK(!candidate->isMarkedForEviction() && !candidate->isMoving());
+    }
+    
+    auto& newMMContainer = getMMContainer(tid+1, pid, cid);
+    uint32_t added = newMMContainer.addBatch(new_items);
+    if (added != new_items.size()) {
+      throw std::runtime_error(
+        folly::sformat("Was not able to add all new items, failed item {} and handle {}", new_items[added]->toString(),new_items_hdl[added]->toString()));
+    }
+    for (auto index = 0U; index < candidates_with_alloc.size(); index++) {
+      bool moved = moveRegularItemWithSync(*candidates_with_alloc[index],
+                                            new_items_hdl[index],
+                                            true);
+      auto ref = candidates_with_alloc[index]->unmarkMoving();
+      XDCHECK_EQ(ref,0);
+      if (moved) {
+        evictions++;
+        XDCHECK(!candidates_with_alloc[index]->isMarkedForEviction());
+        XDCHECK(!candidates_with_alloc[index]->isMoving());
+        XDCHECK(!candidates_with_alloc[index]->isAccessible());
+        XDCHECK_EQ(candidates_with_alloc[index]->getKey(),new_items_hdl[index]->getKey());
+        (*stats_.numWritebacks)[tid][pid][cid].inc();
+        wakeUpWaiters(*candidates_with_alloc[index], std::move(new_items_hdl[index]));
+      } else {
+        //item should be released by the handle destructor
+        wakeUpWaiters(*candidates_with_alloc[index], {});
+      }
 
-      if (candidate->hasChainedItem()) {
+      if (candidates_with_alloc[index]->hasChainedItem()) {
         (*stats_.chainedItemEvictions)[tid][pid][cid].inc();
       } else {
         (*stats_.regularItemEvictions)[tid][pid][cid].inc();
@@ -2075,7 +2103,7 @@ auto& mmContainer = getMMContainer(tid, pid, cid);
       // it's safe to recycle the item here as there are no more
       // references and the item could not been marked as moving
       // by other thread since it's detached from MMContainer.
-      auto res = releaseBackToAllocator(*candidate, RemoveContext::kEviction,
+      auto res = releaseBackToAllocator(*candidates_with_alloc[index], RemoveContext::kEviction,
                                         /* isNascent */ false);
       XDCHECK(res == ReleaseRes::kReleased);
     }
