@@ -1407,7 +1407,9 @@ bool CacheAllocator<CacheTrait>::moveRegularItemWithSync(
   // in the access container to fail - in this case we want
   // to abort the move since the item is no longer valid
   if (!replaced) {
-      return false;
+    auto& newContainer = getMMContainer(*newItemHdl);
+    newContainer.remove(*newItemHdl);
+    return false;
   }
   newItemHdl.unmarkNascent();
   return true;
