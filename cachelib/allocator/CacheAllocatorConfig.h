@@ -266,7 +266,10 @@ class CacheAllocatorConfig {
       std::chrono::seconds regularInterval,
       std::chrono::seconds ccacheInterval,
       uint32_t ccacheStepSizePercent);
-  
+
+  // Enable DSA
+  CacheAllocatorConfig& enableDSA(bool useDsa);
+
   // Enable the background evictor - scans a tier to look for objects
   // to evict to the next tier
   CacheAllocatorConfig& enableBackgroundEvictor(
@@ -490,6 +493,9 @@ class CacheAllocatorConfig {
   // for regular pools and compact caches
   std::chrono::seconds regularPoolOptimizeInterval{0};
   std::chrono::seconds compactCacheOptimizeInterval{0};
+
+  // DSA enabled or disabled
+  bool dsaEnabled{false};
 
   // step size for compact cache size optimization: how many percents of the
   // victim to move
@@ -988,6 +994,12 @@ CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enablePoolRebalancing(
     throw std::invalid_argument(
         "Invalid rebalance strategy for the cache allocator.");
   }
+  return *this;
+}
+
+template <typename T>
+CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enableDSA(bool useDsa) {
+  dsaEnabled = useDsa;
   return *this;
 }
 

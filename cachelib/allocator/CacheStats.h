@@ -122,6 +122,18 @@ struct CacheStat {
   // number of evictions from this class id that was of a chained item
   uint64_t chainedItemEvictions{0};
 
+  // number of batch submissions via DSA hardware interface for eviction
+  uint64_t dsaEvictBatchHwSubmits{0};
+
+  // number of batch submissions via DSA software interface for eviction
+  uint64_t dsaEvictBatchSwSubmits{0};
+
+  // number of individual submissions via DSA hardware interface for eviction
+  uint64_t dsaEvictIndvlHwSubmits{0};
+
+  // number of individual submissions via DSA software interface for eviction
+  uint64_t dsaEvictIndvlSwSubmits{0};
+
   // number of regular items that were evicted from this classId
   uint64_t regularItemEvictions{0};
 
@@ -476,6 +488,18 @@ struct GlobalCacheStats {
   // number of failures to allocate an item due to internal error
   std::vector<uint64_t> allocFailures;
 
+  // number of dsa hardware evictions batch submits across all the pools in the cache.
+  std::vector<uint64_t> dsaEvictBatchHwSubmits;
+
+  // number of dsa software evictions batch submits across all the pools in the cache.
+  std::vector<uint64_t> dsaEvictBatchSwSubmits;
+
+  // number of dsa hardware evictions individual submits across all the pools in the cache.
+  std::vector<uint64_t> dsaEvictIndvlHwSubmits;
+
+  // number of dsa software evictions individual submits across all the pools in the cache.
+  std::vector<uint64_t> dsaEvictIndvlSwSubmits;
+
   // number of evictions across all the pools in the cache.
   std::vector<uint64_t> numEvictions;
 
@@ -519,6 +543,8 @@ struct GlobalCacheStats {
   util::PercentileStats::Estimates nvmLookupLatencyNs{};
   util::PercentileStats::Estimates nvmInsertLatencyNs{};
   util::PercentileStats::Estimates nvmRemoveLatencyNs{};
+  util::PercentileStats::Estimates bgEvictLatencyNs{};
+  util::PercentileStats::Estimates bgPromoteLatencyNs{};
   util::PercentileStats::Estimates ramEvictionAgeSecs{};
   util::PercentileStats::Estimates ramItemLifeTimeSecs{};
   util::PercentileStats::Estimates nvmSmallLifetimeSecs{};

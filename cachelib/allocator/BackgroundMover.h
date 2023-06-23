@@ -36,6 +36,14 @@ struct BackgroundMoverAPIWrapper {
     return cache.traverseAndEvictItems(tid, pid, cid, batch);
   }
 
+  static size_t traverseAndEvictItemsUsingDsa(C& cache,
+                                      unsigned int tid,
+                                      unsigned int pid,
+                                      unsigned int cid,
+                                      size_t batch) {
+    return cache.traverseAndEvictItemsUsingDsa(tid, pid, cid, batch);
+  }
+
   static size_t traverseAndPromoteItems(C& cache,
                                         unsigned int tid,
                                         unsigned int pid,
@@ -60,7 +68,8 @@ class BackgroundMover : public PeriodicWorker {
   //                            (promoted vs. evicted and how much)
   BackgroundMover(Cache& cache,
                   std::shared_ptr<BackgroundMoverStrategy> strategy,
-                  MoverDir direction_);
+                  MoverDir direction_,
+                  bool dsaEnabled = false);
 
   ~BackgroundMover() override;
 

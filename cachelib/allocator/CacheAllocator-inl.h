@@ -315,7 +315,8 @@ void CacheAllocator<CacheTrait>::initWorkers() {
   if (config_.backgroundEvictorEnabled()) {
       startNewBackgroundEvictor(config_.backgroundEvictorInterval,
                                 config_.backgroundEvictorStrategy,
-                                config_.backgroundEvictorThreads);
+                                config_.backgroundEvictorThreads,
+                                config_.dsaEnabled);
   }
 
   if (config_.backgroundPromoterEnabled()) {
@@ -427,7 +428,7 @@ CacheAllocator<CacheTrait>::allocateInternalTier(TierId tid,
                                                  uint32_t expiryTime,
                                                  bool fromBgThread,
                                                  bool evict) {
-  util::LatencyTracker tracker{stats().allocateLatency_};
+  util::LatencyTracker tracker{stats().allocateLatency_, static_cast<size_t>(!fromBgThread)};
 
   SCOPE_FAIL { stats_.invalidAllocs.inc(); };
 
@@ -1325,14 +1326,9 @@ size_t CacheAllocator<CacheTrait>::wakeUpWaitersLocked(folly::StringPiece key,
 }
 
 template <typename CacheTrait>
-bool CacheAllocator<CacheTrait>::moveRegularItemWithSync(
-    Item& oldItem, WriteHandle& newItemHdl, bool fromBgThread) {
-
+void CacheAllocator<CacheTrait>::beforeRegularItemMove(Item& oldItem, WriteHandle& newItemHdl) {
   XDCHECK(oldItem.isMoving());
   XDCHECK(!oldItem.isExpired());
-  // TODO: should we introduce new latency tracker. E.g. evictRegularLatency_
-  // ??? util::LatencyTracker tracker{stats_.evictRegularLatency_};
-
   XDCHECK_EQ(newItemHdl->getSize(), oldItem.getSize());
 
   // take care of the flags before we expose the item to be accessed. this
@@ -1341,6 +1337,17 @@ bool CacheAllocator<CacheTrait>::moveRegularItemWithSync(
   if (oldItem.isNvmClean()) {
     newItemHdl->markNvmClean();
   }
+}
+
+template <typename CacheTrait>
+bool CacheAllocator<CacheTrait>::moveRegularItemWithSync(
+    Item& oldItem, WriteHandle& newItemHdl, bool fromBgThread) {
+
+  beforeRegularItemMove(oldItem, newItemHdl);
+
+  // TODO: should we introduce new latency tracker. E.g. evictRegularLatency_
+  // ??? util::LatencyTracker tracker{stats_.evictRegularLatency_};
+
 
   // what if another thread calls insertOrReplace now when
   // the item is moving and already replaced in the hash table?
@@ -1394,6 +1401,11 @@ bool CacheAllocator<CacheTrait>::moveRegularItemWithSync(
     XDCHECK(newItemHdl->hasChainedItem());
   }
 
+  return afterRegularItemMove(oldItem, newItemHdl);
+}
+
+template <typename CacheTrait>
+bool CacheAllocator<CacheTrait>::afterRegularItemMove(Item& oldItem, WriteHandle& newItemHdl) {
   auto predicate = [&](const Item& item){
     // we rely on moving flag being set (it should block all readers)
     XDCHECK(item.getRefCount() == 0);
@@ -2819,6 +2831,8 @@ PoolStats CacheAllocator<CacheTrait>::getPoolStats(PoolId poolId) const {
     for (const ClassId cid : classIds) {
       uint64_t allocAttempts, evictionAttempts, allocFailures,
                fragmentationSize, classHits, chainedItemEvictions,
+               dsaEvictBatchHwSubmits, dsaEvictBatchSwSubmits,
+               dsaEvictIndvlHwSubmits, dsaEvictIndvlSwSubmits,
                regularItemEvictions, numWritebacks = 0;
       MMContainerStat mmContainerStats;
       for (TierId tid = 0; tid < getNumTiers(); tid++) {
@@ -2828,6 +2842,10 @@ PoolStats CacheAllocator<CacheTrait>::getPoolStats(PoolId poolId) const {
         fragmentationSize += (*stats_.fragmentationSize)[tid][poolId][cid].get();
         classHits += (*stats_.cacheHits)[tid][poolId][cid].get();
         chainedItemEvictions += (*stats_.chainedItemEvictions)[tid][poolId][cid].get();
+        dsaEvictBatchHwSubmits += (*stats_.dsaEvictBatchHwSubmits)[tid][poolId][cid].get();
+        dsaEvictBatchSwSubmits += (*stats_.dsaEvictBatchSwSubmits)[tid][poolId][cid].get();
+        dsaEvictIndvlHwSubmits += (*stats_.dsaEvictIndvlHwSubmits)[tid][poolId][cid].get();
+        dsaEvictIndvlSwSubmits += (*stats_.dsaEvictIndvlSwSubmits)[tid][poolId][cid].get();
         regularItemEvictions += (*stats_.regularItemEvictions)[tid][poolId][cid].get();
         numWritebacks += (*stats_.numWritebacks)[tid][poolId][cid].get();
         mmContainerStats += getMMContainerStat(tid, poolId, cid);
@@ -2843,6 +2861,10 @@ PoolStats CacheAllocator<CacheTrait>::getPoolStats(PoolId poolId) const {
             fragmentationSize,
             classHits,
             chainedItemEvictions,
+            dsaEvictBatchHwSubmits,
+            dsaEvictBatchSwSubmits,
+            dsaEvictIndvlHwSubmits,
+            dsaEvictIndvlSwSubmits,
             regularItemEvictions,
             numWritebacks,
             mmContainerStats}});
@@ -2897,6 +2919,10 @@ PoolStats CacheAllocator<CacheTrait>::getPoolStats(TierId tid, PoolId poolId) co
             (*stats_.fragmentationSize)[tid][poolId][cid].get(),
             classHits,
             (*stats_.chainedItemEvictions)[tid][poolId][cid].get(),
+            (*stats_.dsaEvictBatchHwSubmits)[tid][poolId][cid].get(),
+            (*stats_.dsaEvictBatchSwSubmits)[tid][poolId][cid].get(),
+            (*stats_.dsaEvictIndvlHwSubmits)[tid][poolId][cid].get(),
+            (*stats_.dsaEvictIndvlSwSubmits)[tid][poolId][cid].get(),
             (*stats_.regularItemEvictions)[tid][poolId][cid].get(),
             (*stats_.numWritebacks)[tid][poolId][cid].get(),
             getMMContainerStat(tid, poolId, cid)}});
@@ -4225,13 +4251,15 @@ template <typename CacheTrait>
 bool CacheAllocator<CacheTrait>::startNewBackgroundEvictor(
     std::chrono::milliseconds interval,
     std::shared_ptr<BackgroundMoverStrategy> strategy,
-    size_t threads) {
+    size_t threads,
+    bool dsaEnabled) {
   XDCHECK(threads > 0);
   backgroundEvictor_.resize(threads);
   bool result = true;
 
   for (size_t i = 0; i < threads; i++) {
-    auto ret = startNewWorker("BackgroundEvictor" + std::to_string(i), backgroundEvictor_[i], interval, strategy, MoverDir::Evict);
+    auto ret = startNewWorker("BackgroundEvictor" + std::to_string(i), backgroundEvictor_[i],
+                              interval, strategy, MoverDir::Evict, dsaEnabled);
     result = result && ret;
 
     if (result) {

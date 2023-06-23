@@ -29,6 +29,10 @@ void Stats::init() {
   fragmentationSize = std::make_unique<PerTierPerPoolClassAtomicCounters>();
   allocFailures = std::make_unique<PerTierPerPoolClassAtomicCounters>();
   chainedItemEvictions = std::make_unique<PerTierPerPoolClassAtomicCounters>();
+  dsaEvictBatchHwSubmits = std::make_unique<PerTierPerPoolClassAtomicCounters>();
+  dsaEvictBatchSwSubmits = std::make_unique<PerTierPerPoolClassAtomicCounters>();
+  dsaEvictIndvlHwSubmits = std::make_unique<PerTierPerPoolClassAtomicCounters>();
+  dsaEvictIndvlSwSubmits = std::make_unique<PerTierPerPoolClassAtomicCounters>();
   regularItemEvictions = std::make_unique<PerTierPerPoolClassAtomicCounters>();
   numWritebacks = std::make_unique<PerTierPerPoolClassAtomicCounters>();
   auto initToZero = [](auto& a) {
@@ -46,6 +50,10 @@ void Stats::init() {
   initToZero(*allocFailures);
   initToZero(*fragmentationSize);
   initToZero(*chainedItemEvictions);
+  initToZero(*dsaEvictBatchHwSubmits);
+  initToZero(*dsaEvictBatchSwSubmits);
+  initToZero(*dsaEvictIndvlHwSubmits);
+  initToZero(*dsaEvictIndvlSwSubmits);
   initToZero(*regularItemEvictions);
   initToZero(*numWritebacks);
 
@@ -57,7 +65,7 @@ struct SizeVerify {};
 
 void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
 #ifndef SKIP_SIZE_VERIFY
-  SizeVerify<sizeof(Stats)> a = SizeVerify<16192>{};
+  SizeVerify<sizeof(Stats)> a = SizeVerify<16576>{};
   std::ignore = a;
 #endif
   ret.numCacheGets = numCacheGets.get();
@@ -111,6 +119,8 @@ void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
   ret.nvmLookupLatencyNs = this->nvmLookupLatency_.estimate();
   ret.nvmInsertLatencyNs = this->nvmInsertLatency_.estimate();
   ret.nvmRemoveLatencyNs = this->nvmRemoveLatency_.estimate();
+  ret.bgEvictLatencyNs = this->bgEvictLatency_.estimate();
+  ret.bgPromoteLatencyNs = this->bgPromoteLatency_.estimate();
   ret.ramEvictionAgeSecs = this->ramEvictionAgeSecs_.estimate();
   ret.ramItemLifeTimeSecs = this->ramItemLifeTimeSecs_.estimate();
   ret.nvmSmallLifetimeSecs = this->nvmSmallLifetimeSecs_.estimate();
@@ -151,6 +161,10 @@ void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
   ret.evictionAttempts = accum(*evictionAttempts);
   ret.allocFailures = accum(*allocFailures);
   auto chainedEvictions = accum(*chainedItemEvictions);
+  ret.dsaEvictBatchHwSubmits = accum(*dsaEvictBatchHwSubmits);
+  ret.dsaEvictBatchSwSubmits = accum(*dsaEvictBatchSwSubmits);
+  ret.dsaEvictIndvlHwSubmits = accum(*dsaEvictIndvlHwSubmits);
+  ret.dsaEvictIndvlSwSubmits = accum(*dsaEvictIndvlSwSubmits);
   auto regularEvictions = accum(*regularItemEvictions);
   for (TierId tid = 0; tid < chainedEvictions.size(); tid++) {
     ret.numEvictions.push_back(chainedEvictions[tid] + regularEvictions[tid]);
@@ -223,6 +237,10 @@ PoolStats& PoolStats::operator+=(const PoolStats& other) {
       d.numHits += s.numHits;
       d.numWritebacks += s.numWritebacks;
       d.chainedItemEvictions += s.chainedItemEvictions;
+      d.dsaEvictBatchHwSubmits += s.dsaEvictBatchHwSubmits;
+      d.dsaEvictBatchSwSubmits += s.dsaEvictBatchSwSubmits;
+      d.dsaEvictIndvlHwSubmits += s.dsaEvictIndvlHwSubmits;
+      d.dsaEvictIndvlSwSubmits += s.dsaEvictIndvlSwSubmits;
       d.regularItemEvictions += s.regularItemEvictions;
     }
 

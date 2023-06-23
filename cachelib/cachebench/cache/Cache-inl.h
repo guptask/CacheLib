@@ -46,6 +46,7 @@ Cache<Allocator>::Cache(const CacheConfig& config,
       config_.getRebalanceStrategy(),
       std::chrono::seconds(config_.poolRebalanceIntervalSec));
 
+  allocatorConfig_.enableDSA(config_.dsaEnabled);
   allocatorConfig_.enableBackgroundEvictor(
       config_.getBackgroundEvictorStrategy(),
       std::chrono::milliseconds(config_.backgroundEvictorIntervalMilSec),
@@ -669,6 +670,10 @@ Stats Cache<Allocator>::getStats() const {
   ret.backgroundPromoStats = cacheStats.promotionStats;
 
   ret.evictAttempts = cacheStats.evictionAttempts;
+  ret.dsaEvictBatchHwSubmits = cacheStats.dsaEvictBatchHwSubmits;
+  ret.dsaEvictBatchSwSubmits = cacheStats.dsaEvictBatchSwSubmits;
+  ret.dsaEvictIndvlHwSubmits = cacheStats.dsaEvictIndvlHwSubmits;
+  ret.dsaEvictIndvlSwSubmits = cacheStats.dsaEvictIndvlSwSubmits;
   ret.allocAttempts = cacheStats.allocAttempts;
   ret.allocFailures = cacheStats.allocFailures;
 
@@ -712,6 +717,8 @@ Stats Cache<Allocator>::getStats() const {
 
   ret.cacheAllocateLatencyNs = cacheStats.allocateLatencyNs;
   ret.cacheFindLatencyNs = cacheFindLatency_.estimate();
+  ret.cacheBgEvictLatencyNs = cacheStats.bgEvictLatencyNs;
+  ret.cacheBgPromoteLatencyNs = cacheStats.bgPromoteLatencyNs;
 
   // Populate counters.
   // TODO: Populate more counters that are interesting to cachebench.

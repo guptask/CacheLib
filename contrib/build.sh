@@ -166,6 +166,7 @@ if test -z "$skip_os_pkgs" ; then
   esac
 fi
 
+source /opt/rh/gcc-toolset-12/enable
 build_dependencies
 
 test -n "$build_cachelib_tests" \

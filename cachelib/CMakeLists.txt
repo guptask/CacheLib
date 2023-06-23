@@ -43,6 +43,8 @@ set(PACKAGE_BUGREPORT "https://github.com/facebook/TBD")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(BUILD_TESTS "If enabled, compile the tests." ON)
+option(WITH_DTO "If enabled, build with DSA transparent offloading." OFF)
+option(WITH_DML_WRAPPER "If enabled, build with DML wrapper" OFF)
 
 
 set(BIN_INSTALL_DIR bin CACHE STRING
@@ -378,6 +380,8 @@ if (BUILD_SHARED_LIBS)
     cachelib_datatype
     cachelib_navy
     cachelib_shm
+    dmlhl
+    dl
     PROPERTIES
     SOVERSION ${CACHELIB_MAJOR_VERSION}
     VERSION ${PACKAGE_VERSION}

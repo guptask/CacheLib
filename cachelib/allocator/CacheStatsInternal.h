@@ -194,6 +194,8 @@ struct Stats {
   mutable util::PercentileStats nvmLookupLatency_;
   mutable util::PercentileStats nvmInsertLatency_;
   mutable util::PercentileStats nvmRemoveLatency_;
+  mutable util::PercentileStats bgEvictLatency_;
+  mutable util::PercentileStats bgPromoteLatency_;
 
   // percentile stats for various cache statistics
   mutable util::PercentileStats ramEvictionAgeSecs_;
@@ -230,6 +232,10 @@ struct Stats {
   std::unique_ptr<PerTierPerPoolClassAtomicCounters> allocFailures{};
   std::unique_ptr<PerTierPerPoolClassAtomicCounters> fragmentationSize{};
   std::unique_ptr<PerTierPerPoolClassAtomicCounters> chainedItemEvictions{};
+  std::unique_ptr<PerTierPerPoolClassAtomicCounters> dsaEvictBatchHwSubmits{};
+  std::unique_ptr<PerTierPerPoolClassAtomicCounters> dsaEvictBatchSwSubmits{};
+  std::unique_ptr<PerTierPerPoolClassAtomicCounters> dsaEvictIndvlHwSubmits{};
+  std::unique_ptr<PerTierPerPoolClassAtomicCounters> dsaEvictIndvlSwSubmits{};
   std::unique_ptr<PerTierPerPoolClassAtomicCounters> regularItemEvictions{};
   std::unique_ptr<PerTierPerPoolClassAtomicCounters> numWritebacks{};
 

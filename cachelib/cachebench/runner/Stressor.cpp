@@ -87,18 +87,18 @@ void ThroughputStats::render(uint64_t elapsedTimeNs, std::ostream& out) const {
 
   auto outFn = [&out](folly::StringPiece k1, uint64_t v1, folly::StringPiece k2,
                       double v2) {
-    out << folly::sformat("{:10}: {:9,}/s, {:10}: {:6.2f}%", k1, v1, k2, v2)
+    out << folly::sformat("{:25}: {:10,}\n{:25}: {:10.2f}", k1, v1, k2, v2)
         << std::endl;
   };
-  outFn("get", getPerSec, "success", getSuccessRate);
-  outFn("couldExist", couldExistPerSec, "success", couldExistSuccessRate);
-  outFn("set", setPerSec, "success", setSuccessRate);
-  outFn("del", delPerSec, "found", delSuccessRate);
+  outFn("get per sec", getPerSec, "get success pct", getSuccessRate);
+  outFn("couldExist per sec", couldExistPerSec, "countExist success pct", couldExistSuccessRate);
+  outFn("set per sec", setPerSec, "set success pct", setSuccessRate);
+  outFn("del per sec", delPerSec, "del success pct", delSuccessRate);
   if (update > 0) {
-    outFn("update", updatePerSec, "success", updateSuccessRate);
+    outFn("update per sec", updatePerSec, "update success pct", updateSuccessRate);
   }
   if (addChained > 0) {
-    outFn("addChained", addChainedPerSec, "success", addChainedSuccessRate);
+    outFn("addChained per sec", addChainedPerSec, "addChained success pct", addChainedSuccessRate);
   }
 }
 
