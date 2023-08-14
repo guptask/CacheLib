@@ -544,6 +544,8 @@ struct GlobalCacheStats {
   util::PercentileStats::Estimates nvmInsertLatencyNs{};
   util::PercentileStats::Estimates nvmRemoveLatencyNs{};
   util::PercentileStats::Estimates bgEvictLatencyNs{};
+  util::PercentileStats::Estimates dmlLargeItemWaitLatencyNs{};
+  util::PercentileStats::Estimates dmlSmallItemWaitLatencyNs{};
   util::PercentileStats::Estimates bgPromoteLatencyNs{};
   util::PercentileStats::Estimates ramEvictionAgeSecs{};
   util::PercentileStats::Estimates ramItemLifeTimeSecs{};

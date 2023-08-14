@@ -77,6 +77,8 @@ struct Stats {
   util::PercentileStats::Estimates cacheAllocateLatencyNs;
   util::PercentileStats::Estimates cacheFindLatencyNs;
   util::PercentileStats::Estimates cacheBgEvictLatencyNs;
+  util::PercentileStats::Estimates cacheDmlLargeItemWaitLatencyNs;
+  util::PercentileStats::Estimates cacheDmlSmallItemWaitLatencyNs;
   util::PercentileStats::Estimates cacheBgPromoteLatencyNs;
 
   double nvmReadLatencyMicrosP50{0};
@@ -308,6 +310,8 @@ struct Stats {
         printLatencies("Cache Find API latency", cacheFindLatencyNs);
         printLatencies("Cache Allocate API latency", cacheAllocateLatencyNs);
         printLatencies("Cache Background Eviction latency", cacheBgEvictLatencyNs);
+        printLatencies("Cache DML Large Item Wait latency", cacheDmlLargeItemWaitLatencyNs);
+        printLatencies("Cache DML Small Item Wait latency", cacheDmlSmallItemWaitLatencyNs);
         printLatencies("Cache Background Promotion latency", cacheBgPromoteLatencyNs);
       }
     }
@@ -547,6 +551,8 @@ struct Stats {
     counters["find_latency_p99"] = cacheFindLatencyNs.p99;
     counters["alloc_latency_p99"] = cacheAllocateLatencyNs.p99;
     counters["bg_evict_latency_p99"] = cacheBgEvictLatencyNs.p99;
+    counters["dml_large_item_wait_latency_p99"] = cacheDmlLargeItemWaitLatencyNs.p99;
+    counters["dml_small_item_wait_latency_p99"] = cacheDmlSmallItemWaitLatencyNs.p99;
     counters["bg_promote_latency_p99"] = cacheBgPromoteLatencyNs.p99;
 
     counters["ram_hit_rate"] = calcInvertPctFn(numCacheGetMiss, numCacheGets);

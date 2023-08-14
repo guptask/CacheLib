@@ -65,7 +65,7 @@ struct SizeVerify {};
 
 void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
 #ifndef SKIP_SIZE_VERIFY
-  SizeVerify<sizeof(Stats)> a = SizeVerify<16576>{};
+  SizeVerify<sizeof(Stats)> a = SizeVerify<16928>{};
   std::ignore = a;
 #endif
   ret.numCacheGets = numCacheGets.get();
@@ -120,6 +120,8 @@ void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
   ret.nvmInsertLatencyNs = this->nvmInsertLatency_.estimate();
   ret.nvmRemoveLatencyNs = this->nvmRemoveLatency_.estimate();
   ret.bgEvictLatencyNs = this->bgEvictLatency_.estimate();
+  ret.dmlLargeItemWaitLatencyNs = this->dmlLargeItemWaitLatency_.estimate();
+  ret.dmlSmallItemWaitLatencyNs = this->dmlSmallItemWaitLatency_.estimate();
   ret.bgPromoteLatencyNs = this->bgPromoteLatency_.estimate();
   ret.ramEvictionAgeSecs = this->ramEvictionAgeSecs_.estimate();
   ret.ramItemLifeTimeSecs = this->ramItemLifeTimeSecs_.estimate();

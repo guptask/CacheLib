@@ -1,7 +1,11 @@
 #!/usr/bin/python3
+
 import sys
 import json
 import re
+import os
+import pandas as pd
+from csv import writer
 
 '''
 Parsing support for the following command:
@@ -21,7 +25,7 @@ def num(s):
         return float(s)
 
 
-def parse(fileName):
+def parse(fileName, testName):
     with open(fileName) as file:
         data = file.readlines()
 
@@ -75,7 +79,7 @@ def parse(fileName):
 
             cbMetrics[key] = value
 
-    cbMetrics = {'cachebench_metrics': cbMetrics}
+    #cbMetrics = {'cachebench_metrics': cbMetrics}
 
     ## Parse system metrics
     sysMetrics = {}
@@ -104,19 +108,41 @@ def parse(fileName):
             value = num(value)
             sysMetrics[key] = value
 
-    sysMetrics = {'system_metrics': sysMetrics}
+    #sysMetrics = {'system_metrics': sysMetrics}
 
     ## Create the unified view
-    joined = {**jconfig, **cbMetrics, **sysMetrics}
-    return json.dumps(joined, indent=2)
+    #joined = {**jconfig, **cbMetrics, **sysMetrics}
+    joined = {**cbMetrics}
+    label = {"label" : testName}
+    joined.update(label)
+    return joined
+    #return json.dumps(joined, indent=2)
 
 
 def main():
     args = sys.argv[1:]
-    fileName = args[0]
-    out = parse(fileName)
-    print(out)
+    if len(args) != 3:
+        print("Invalid Args. Required : file-name, test-name, out-csv")
+        exit()
 
+    fileName = args[0]
+    testName = args[1]
+    outFile  = args[2]
+
+    keys = []
+    values = []
+    out = parse(fileName, testName)
+    for key in out:
+        keys.append(key)
+        values.append(str(out[key]))
+
+    addIndex = not os.path.isfile(outFile)
+    with open(outFile, 'a') as f:
+        writer_object = writer(f)
+        if addIndex:
+            writer_object.writerow(keys)
+        writer_object.writerow(values)
+        f.close()
 
 if __name__ == '__main__':
     main()

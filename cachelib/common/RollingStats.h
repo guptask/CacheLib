@@ -52,16 +52,16 @@ class RollingStats {
 
 class RollingLatencyTracker {
  public:
-  explicit RollingLatencyTracker(RollingStats& stats)
-      : stats_(&stats), begin_(std::chrono::steady_clock::now()) {}
+  explicit RollingLatencyTracker(RollingStats& stats, size_t nSamples = 1)
+      : stats_(&stats), nSamples_(nSamples), begin_(std::chrono::steady_clock::now()) {}
   RollingLatencyTracker() {}
   ~RollingLatencyTracker() {
-    if (stats_) {
+    if (nSamples_ > 0 && stats_) {
       auto tp = std::chrono::steady_clock::now();
       auto diffNanos =
           std::chrono::duration_cast<std::chrono::nanoseconds>(tp - begin_)
               .count();
-      stats_->trackValue(static_cast<double>(diffNanos));
+      stats_->trackValue(static_cast<double>(diffNanos / nSamples_));
     }
   }
 
@@ -69,7 +69,7 @@ class RollingLatencyTracker {
   RollingLatencyTracker& operator=(const RollingLatencyTracker&) = delete;
 
   RollingLatencyTracker(RollingLatencyTracker&& rhs) noexcept
-      : stats_(rhs.stats_), begin_(rhs.begin_) {
+      : stats_(rhs.stats_), nSamples_(rhs.nSamples_), begin_(rhs.begin_) {
     rhs.stats_ = nullptr;
   }
 
@@ -83,6 +83,7 @@ class RollingLatencyTracker {
 
  private:
   RollingStats* stats_{nullptr};
+  size_t nSamples_{1};
   std::chrono::time_point<std::chrono::steady_clock> begin_;
 };
 } // namespace util

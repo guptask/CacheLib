@@ -718,6 +718,8 @@ Stats Cache<Allocator>::getStats() const {
   ret.cacheAllocateLatencyNs = cacheStats.allocateLatencyNs;
   ret.cacheFindLatencyNs = cacheFindLatency_.estimate();
   ret.cacheBgEvictLatencyNs = cacheStats.bgEvictLatencyNs;
+  ret.cacheDmlLargeItemWaitLatencyNs = cacheStats.dmlLargeItemWaitLatencyNs;
+  ret.cacheDmlSmallItemWaitLatencyNs = cacheStats.dmlSmallItemWaitLatencyNs;
   ret.cacheBgPromoteLatencyNs = cacheStats.bgPromoteLatencyNs;
 
   // Populate counters.

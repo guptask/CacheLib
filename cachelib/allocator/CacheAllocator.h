@@ -2279,9 +2279,15 @@ class CacheAllocator : public CacheBase {
             new_items[added]->toString(),new_items_hdl[added]->toString()));
     }
 
-    bool useBatch = candidates_with_alloc.size() > 4;
-    auto sequence = dml::sequence<allocator_t>(candidates_with_alloc.size());
-    for (auto index = 0U; index < candidates_with_alloc.size(); index++) {
+    unsigned int smallItemThreshCid = 11;
+    /* Note: Larger split on HW path for large items
+             80:20 split for larger items  (cid > 11)
+             70:30 split for smaller items (cid <= 11) */
+    float hwPathSplit = (cid > smallItemThreshCid) ? 0.8 : 0.7;
+    auto seqSize = (candidates_with_alloc.size() >= 10) ?
+                static_cast<size_t>(candidates_with_alloc.size() * hwPathSplit) : 0;
+    auto sequence = dml::sequence<allocator_t>(seqSize);
+    for (auto index = 0U; index < seqSize; index++) {
       beforeRegularItemMove(*candidates_with_alloc[index], new_items_hdl[index]);
 
       dml::const_data_view srcView = dml::make_view(
@@ -2291,38 +2297,50 @@ class CacheAllocator : public CacheBase {
           reinterpret_cast<uint8_t*>(new_items_hdl[index]->getMemory()),
           new_items_hdl[index]->getSize());
 
-      if (useBatch) {
-        if (sequence.add(dml::mem_copy, srcView, dstView) != dml::status_code::ok) {
-          throw std::runtime_error(folly::sformat("failed to add dml::mem_copy operation to the sequence for item: {}",
-                      candidates_with_alloc[index]->toString()));
-        }
-      } else {
-        auto result = dml::execute<dml::hardware>(dml::mem_copy, srcView, dstView);
-        (*stats_.dsaEvictIndvlHwSubmits)[tid][pid][cid].inc();
-        if (result.status != dml::status_code::ok) {
-          result = dml::execute<dml::software>(dml::mem_copy, srcView, dstView);
-          (*stats_.dsaEvictIndvlSwSubmits)[tid][pid][cid].inc();
-        }
-
-        if (result.status != dml::status_code::ok) {
-          std::string error = dsa_error_string(result);
-          auto errorStr = folly::sformat("dml completion error: {} for item: {}", error, candidates_with_alloc[index]->toString());
-          XDCHECK_EQ(result.status,dml::status_code::ok) << errorStr;
-          throw std::runtime_error(errorStr);
-        }
-        XDCHECK_EQ(result.status,dml::status_code::ok);
+      if (sequence.add(dml::mem_copy, srcView, dstView) != dml::status_code::ok) {
+        throw std::runtime_error(folly::sformat(
+          "failed to add dml::mem_copy operation to the sequence for item: {}",
+          candidates_with_alloc[index]->toString()));
       }
     }
 
     batch_handler_t handler{};
-    if (useBatch) {
+    if (seqSize) {
       handler = dml::submit<dml::hardware>(dml::batch, sequence);
       if (!handler.valid()) {
         auto status = handler.get();
         XDCHECK(handler.valid()) << dsa_error_string(status);
-        throw std::runtime_error(folly::sformat("Failed dml sequence hw submission: {}", dsa_error_string(status)));
+        throw std::runtime_error(folly::sformat(
+          "Failed dml sequence hw submission: {}", dsa_error_string(status)));
       }
       (*stats_.dsaEvictBatchHwSubmits)[tid][pid][cid].inc();
+    }
+
+    for (auto index = seqSize; index < candidates_with_alloc.size(); index++) {
+      beforeRegularItemMove(*candidates_with_alloc[index], new_items_hdl[index]);
+
+      std::memcpy(reinterpret_cast<uint8_t*>(new_items_hdl[index]->getMemory()),
+          reinterpret_cast<uint8_t*>(candidates_with_alloc[index]->getMemory()),
+          candidates_with_alloc[index]->getSize());
+#if 0
+      dml::const_data_view srcView = dml::make_view(
+          reinterpret_cast<uint8_t*>(candidates_with_alloc[index]->getMemory()),
+          candidates_with_alloc[index]->getSize());
+      dml::data_view dstView = dml::make_view(
+          reinterpret_cast<uint8_t*>(new_items_hdl[index]->getMemory()),
+          new_items_hdl[index]->getSize());
+
+      auto result = dml::execute<dml::software>(dml::mem_copy, srcView, dstView);
+      (*stats_.dsaEvictIndvlSwSubmits)[tid][pid][cid].inc();
+      if (result.status != dml::status_code::ok) {
+        std::string error = dsa_error_string(result);
+        auto errorStr = folly::sformat("dml completion error: {} for item: {}",
+                                  error, candidates_with_alloc[index]->toString());
+        XDCHECK_EQ(result.status,dml::status_code::ok) << errorStr;
+        throw std::runtime_error(errorStr);
+      }
+      XDCHECK_EQ(result.status,dml::status_code::ok);
+#endif
     }
 
     for (auto index = 0U; index < candidates_with_alloc.size(); index++) {
@@ -2348,7 +2366,12 @@ class CacheAllocator : public CacheBase {
       }
     }
 
-    if (useBatch) {
+    if (seqSize) {
+      size_t largeBatch = (cid >  smallItemThreshCid) ? seqSize : 0;
+      size_t smallBatch = (cid <= smallItemThreshCid) ? seqSize : 0;
+      util::LatencyTracker largeItemWait{stats().dmlLargeItemWaitLatency_, largeBatch};
+      util::LatencyTracker smallItemWait{stats().dmlSmallItemWaitLatency_, smallBatch};
+
       auto result = handler.get();
       if (result.status != dml::status_code::ok) {
         handler = dml::submit<dml::software>(dml::batch, sequence);
