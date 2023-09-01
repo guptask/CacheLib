@@ -404,7 +404,8 @@ template <typename CacheTrait>
 bool CacheAllocator<CacheTrait>::shouldWakeupBgEvictor(TierId tid, PoolId pid, ClassId cid) {
   // TODO: should we also work on lower tiers? should we have separate set of params?
   if (tid == 1) return false;
-  return (1-getACStats(tid, pid, cid).usageFraction())*100 <= config_.lowEvictionAcWatermark;
+  return true;
+  //return (1-getACStats(tid, pid, cid).usageFraction())*100 <= config_.lowEvictionAcWatermark;
 }
  
 template <typename CacheTrait>
@@ -519,9 +520,9 @@ CacheAllocator<CacheTrait>::allocateInternalTier(TierId tid,
   
   void* memory = allocator_[tid]->allocate(pid, requiredSize);
   
-  //if (backgroundEvictor_.size() && !fromBgThread && (memory == nullptr || shouldWakeupBgEvictor(tid, pid, cid))) {
-  //  backgroundEvictor_[backgroundWorkerId(tid, pid, cid, backgroundEvictor_.size())]->wakeUp();
-  //}
+  if (backgroundEvictor_.size() && !fromBgThread && (memory == nullptr || shouldWakeupBgEvictor(tid, pid, cid))) {
+    backgroundEvictor_[backgroundWorkerId(tid, pid, cid, backgroundEvictor_.size())]->wakeUp();
+  }
   
   if (memory == nullptr && !evict) {
     return {};
