@@ -602,7 +602,7 @@ TEST_F(MemoryAllocatorTest, isAllocFreed) {
       ASSERT_TRUE(m.isAllocFreed(releaseContext, slabAlloc));
     }
 
-    m.completeSlabRelease(std::move(releaseContext));
+    m.completeSlabRelease(releaseContext);
     ASSERT_TRUE(activeAllocs.size() > 0);
     for (void* slabAlloc : activeAllocs) {
       // slab release already completed
@@ -767,7 +767,7 @@ TEST_F(MemoryAllocatorTest, ZeroedSlabAllocs) {
       m2.free(slabAlloc);
       ASSERT_TRUE(m2.isAllocFreed(releaseContext, slabAlloc));
     }
-    m2.completeSlabRelease(std::move(releaseContext));
+    m2.completeSlabRelease(releaseContext);
   }
 
   // try allocate slabs again, they should be zero
@@ -816,7 +816,7 @@ TEST_F(MemoryAllocatorTest, forEachAllocation) {
     ASSERT_TRUE(m.isAllocFreed(releaseContext, slabAlloc));
   }
 
-  m.completeSlabRelease(std::move(releaseContext));
+  m.completeSlabRelease(releaseContext);
   ASSERT_TRUE(activeAllocs.size() > 0);
   for (void* slabAlloc : activeAllocs) {
     // slab release already completed

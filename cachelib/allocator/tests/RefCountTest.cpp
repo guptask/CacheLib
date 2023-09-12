@@ -101,12 +101,12 @@ void RefCountTest::testBasic() {
   ASSERT_FALSE(ref.template isFlagSet<RefcountWithFlags::Flags::kMMFlag1>());
 
   for (uint32_t i = 0; i < RefcountWithFlags::kAccessRefMask; i++) {
-    ASSERT_EQ(ref.incRef(true),RefcountWithFlags::incOk);
+    ASSERT_EQ(ref.incRef(),RefcountWithFlags::incOk);
   }
 
   // Incrementing past the max will fail
   auto rawRef = ref.getRaw();
-  ASSERT_THROW(ref.incRef(true), std::overflow_error);
+  ASSERT_THROW(ref.incRef(), std::overflow_error);
   ASSERT_EQ(rawRef, ref.getRaw());
 
   // Bumping up access ref shouldn't affect admin ref and flags
@@ -152,11 +152,11 @@ void RefCountTest::testBasic() {
   ASSERT_FALSE(ref.template isFlagSet<RefcountWithFlags::Flags::kMMFlag1>());
 
   // conditionally set flags
-  ASSERT_FALSE(ref.markMoving(true));
+  ASSERT_FALSE(ref.markMoving());
   ref.markInMMContainer();
   // only first one succeeds
-  ASSERT_TRUE(ref.markMoving(true));
-  ASSERT_FALSE(ref.markMoving(true));
+  ASSERT_TRUE(ref.markMoving());
+  ASSERT_FALSE(ref.markMoving());
   ref.unmarkInMMContainer();
 
   ref.template setFlag<RefcountWithFlags::Flags::kMMFlag0>();
@@ -174,24 +174,16 @@ void RefCountTest::testBasic() {
 
 void RefCountTest::testMarkForEvictionAndMoving() {
   {
-    // cannot mark for eviction when not accessible or not in MMContainer
+    // cannot mark for eviction when not in MMContainer
     RefcountWithFlags ref;
-    ASSERT_FALSE(ref.markForEviction());
-
-    ref.markInMMContainer();
-    ASSERT_FALSE(ref.markForEviction());
-    ref.unmarkInMMContainer();
-
-    ref.markAccessible();
     ASSERT_FALSE(ref.markForEviction());
   }
 
   {
-    // can mark for eviction when accessible and in MMContainer
+    // can mark for eviction when in MMContainer
     // and unmarkForEviction return value contains admin bits
     RefcountWithFlags ref;
     ref.markInMMContainer();
-    ref.markAccessible();
     ASSERT_TRUE(ref.markForEviction());
     ASSERT_TRUE(ref.unmarkForEviction() > 0);
   }
@@ -200,13 +192,11 @@ void RefCountTest::testMarkForEvictionAndMoving() {
     // cannot mark for eviction when moving
     RefcountWithFlags ref;
     ref.markInMMContainer();
-    ref.markAccessible();
 
-    ASSERT_TRUE(ref.markMoving(true));
+    ASSERT_TRUE(ref.markMoving());
     ASSERT_FALSE(ref.markForEviction());
 
     ref.unmarkInMMContainer();
-    ref.unmarkAccessible();
     auto ret = ref.unmarkMoving();
     ASSERT_EQ(ret, 0);
   }
@@ -215,40 +205,21 @@ void RefCountTest::testMarkForEvictionAndMoving() {
     // cannot mark moving when marked for eviction
     RefcountWithFlags ref;
     ref.markInMMContainer();
-    ref.markAccessible();
 
     ASSERT_TRUE(ref.markForEviction());
-    ASSERT_FALSE(ref.markMoving(true));
+    ASSERT_FALSE(ref.markMoving());
 
     ref.unmarkInMMContainer();
-    ref.unmarkAccessible();
     auto ret = ref.unmarkForEviction();
     ASSERT_EQ(ret, 0);
-  }
-
-  {
-    // can mark moving when ref count > 0
-    RefcountWithFlags ref;
-    ref.markInMMContainer();
-    ref.markAccessible();
-
-    ref.incRef(true);
-
-    ASSERT_TRUE(ref.markMoving(false));
-
-    ref.unmarkInMMContainer();
-    ref.unmarkAccessible();
-    auto ret = ref.unmarkMoving();
-    ASSERT_EQ(ret, 1);
   }
 
   {
     // cannot mark for eviction when ref count > 0
     RefcountWithFlags ref;
     ref.markInMMContainer();
-    ref.markAccessible();
 
-    ref.incRef(true);
+    ref.incRef();
     ASSERT_FALSE(ref.markForEviction());
   }
 }

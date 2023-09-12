@@ -126,8 +126,8 @@ class NvmCacheTest : public testing::Test {
     return cache_ ? cache_->nvmCache_.get() : nullptr;
   }
 
-  std::unique_ptr<NvmItem> makeNvmItem(const WriteHandle& handle) {
-    return getNvmCache()->makeNvmItem(*handle);
+  std::unique_ptr<NvmItem> makeNvmItem(const Item& item) {
+    return getNvmCache()->makeNvmItem(item);
   }
 
   std::unique_ptr<folly::IOBuf> createItemAsIOBuf(folly::StringPiece key,

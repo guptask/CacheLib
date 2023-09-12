@@ -238,8 +238,8 @@ bool CacheItem<CacheTrait>::markForEvictionWhenMoving() {
 }
 
 template <typename CacheTrait>
-bool CacheItem<CacheTrait>::markMoving(bool failIfRefNotZero) {
-  return ref_.markMoving(failIfRefNotZero);
+bool CacheItem<CacheTrait>::markMoving() {
+  return ref_.markMoving();
 }
 
 template <typename CacheTrait>
@@ -356,7 +356,8 @@ bool CacheItem<CacheTrait>::updateExpiryTime(uint32_t expiryTimeSecs) noexcept {
   // check for moving to make sure we are not updating the expiry time while at
   // the same time re-allocating the item with the old state of the expiry time
   // in moveRegularItem(). See D6852328
-  if (isMoving() || isMarkedForEviction() || !isInMMContainer() || isChainedItem()) {
+  if (isMoving() || isMarkedForEviction() || !isInMMContainer() ||
+      isChainedItem()) {
     return false;
   }
   // attempt to atomically update the value of expiryTime

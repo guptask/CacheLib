@@ -75,6 +75,8 @@ struct Stats {
   uint64_t numNvmItemRemovedSetSize{0};
 
   util::PercentileStats::Estimates cacheAllocateLatencyNs;
+  util::PercentileStats::Estimates cacheBgEvictLatencyNs;
+  util::PercentileStats::Estimates cacheBgPromoteLatencyNs;
   util::PercentileStats::Estimates cacheFindLatencyNs;
   util::PercentileStats::Estimates cacheBgEvictLatencyNs;
   util::PercentileStats::Estimates cacheDmlLargeItemWaitLatencyNs;
@@ -226,20 +228,47 @@ struct Stats {
 
         // If the pool is not full, extrapolate usageFraction for AC assuming it
         // will grow at the same rate. This value will be the same for all ACs.
-        const auto acUsageFraction = (poolUsageFraction.at(tid)[pid] < 1.0)
-                                   ? poolUsageFraction.at(tid)[pid]
-                                   : stats.usageFraction();
-
-        out << folly::sformat(
+        if (memorySize > 0) {
+          const auto acUsageFraction = stats.approxUsage();
+          out << folly::sformat(
                    "tid{:2} pid{:2} cid{:4} {:8.2f}{} usage fraction: {:4.2f}\n"
                    "tid{:2} pid{:2} cid{:4} {:8.2f}{} memory size in {}: {:8.2f}\n"
                    "tid{:2} pid{:2} cid{:4} {:8.2f}{} rolling avg alloc latency in ns: {:8.2f}",
                    tid, pid, cid, allocSize, allocSizeSuffix, acUsageFraction,
                    tid, pid, cid, allocSize, allocSizeSuffix, memorySizeSuffix, memorySize,
                    tid, pid, cid, allocSize, allocSizeSuffix, stats.allocLatencyNs.estimate())
-            << std::endl;
+              << std::endl;
+        }
       });
     }
+
+    int bgId = 1;
+    for (auto &bgWorkerStats : backgroundEvictorStats) {
+        if (bgWorkerStats.numMovedItems > 0) {
+          out << folly::sformat(" == Background Evictor Thread {} ==", bgId) << std::endl;
+          out << folly::sformat("Evicted Items : {:,}, Traversals : {:,}, Run Count : {:,}, \n"
+                                "Avg Time Per Traversal (ns) : {:,}, Avg Items Evicted: {:.2f}",
+                                bgWorkerStats.numMovedItems, bgWorkerStats.numTraversals,
+                                bgWorkerStats.runCount, bgWorkerStats.avgTraversalTimeNs,
+                                (double)bgWorkerStats.numMovedItems/(double)bgWorkerStats.numTraversals)
+              << std::endl;
+        }
+        bgId++;
+
+>>>>>>> 80f6993cf1dec016c478e5744c15e410a91985ca
+    }
+    bgId = 1;
+    for (auto &bgWorkerStats : backgroundPromoStats) {
+        if (bgWorkerStats.numMovedItems > 0) {
+          out << folly::sformat(" == Background Promoter Thread {} ==", bgId) << std::endl;
+          out << folly::sformat("Promoted Items : {:,}, Traversals : {:,}, Run Count : {:,}, \n"
+                                "Avg Time Per Traversal (ns) : {:,}, Avg Items Promoted: {:.2f}",
+                                bgWorkerStats.numMovedItems, bgWorkerStats.numTraversals,
+                                bgWorkerStats.runCount, bgWorkerStats.avgTraversalTimeNs,
+                                (double)bgWorkerStats.numMovedItems/(double)bgWorkerStats.numTraversals)
+              << std::endl;
+        }
+        bgId++;
 
     int bgId = 1;
     for (auto &bgWorkerStats : backgroundEvictorStats) {
@@ -309,10 +338,10 @@ struct Stats {
 
         printLatencies("Cache Find API latency", cacheFindLatencyNs);
         printLatencies("Cache Allocate API latency", cacheAllocateLatencyNs);
-        printLatencies("Cache Background Eviction latency", cacheBgEvictLatencyNs);
+        printLatencies("Cache Background Eviction API latency", cacheBgEvictLatencyNs);
         printLatencies("Cache DML Large Item Wait latency", cacheDmlLargeItemWaitLatencyNs);
         printLatencies("Cache DML Small Item Wait latency", cacheDmlSmallItemWaitLatencyNs);
-        printLatencies("Cache Background Promotion latency", cacheBgPromoteLatencyNs);
+        printLatencies("Cache Background Promotion API latency", cacheBgPromoteLatencyNs);
       }
     }
 
@@ -496,39 +525,42 @@ struct Stats {
     return numNvmGets > 0 ? numNvmGetMiss : numCacheGetMiss;
   }
 
-  double getOverallHitRatio(const Stats& prevStats) const {
-    auto totalMisses = getTotalMisses();
-    auto prevTotalMisses = prevStats.getTotalMisses();
-    if (numCacheGets <= prevStats.numCacheGets ||
-        totalMisses <= prevTotalMisses) {
-      return 0.0;
+  std::tuple<double, double, double> getHitRatios(
+      const Stats& prevStats) const {
+    double overallHitRatio = 0.0;
+    double ramHitRatio = 0.0;
+    double nvmHitRatio = 0.0;
+
+    if (numCacheGets > prevStats.numCacheGets) {
+      auto totalMisses = getTotalMisses();
+      auto prevTotalMisses = prevStats.getTotalMisses();
+
+      overallHitRatio = invertPctFn(totalMisses - prevTotalMisses,
+                                    numCacheGets - prevStats.numCacheGets);
+
+      ramHitRatio = invertPctFn(numCacheGetMiss - prevStats.numCacheGetMiss,
+                                numCacheGets - prevStats.numCacheGets);
     }
 
-    return invertPctFn(totalMisses - prevTotalMisses,
-                       numCacheGets - prevStats.numCacheGets);
+    if (numNvmGets > prevStats.numNvmGets) {
+      nvmHitRatio = invertPctFn(numNvmGetMiss - prevStats.numNvmGetMiss,
+                                numNvmGets - prevStats.numNvmGets);
+    }
+
+    return std::make_tuple(overallHitRatio, ramHitRatio, nvmHitRatio);
   }
 
   // Render the stats based on the delta between overall stats and previous
   // stats. It can be used to render the stats in the last time period.
   void render(const Stats& prevStats, std::ostream& out) const {
-    auto totalMisses = getTotalMisses();
-    auto prevTotalMisses = prevStats.getTotalMisses();
-    if (numCacheGets > prevStats.numCacheGets &&
-        totalMisses >= prevTotalMisses) {
-      const double overallHitRatio = invertPctFn(
-          totalMisses - prevTotalMisses, numCacheGets - prevStats.numCacheGets);
+    if (numCacheGets > prevStats.numCacheGets) {
+      auto [overallHitRatio, ramHitRatio, nvmHitRatio] =
+          getHitRatios(prevStats);
       out << folly::sformat("Cache Gets    : {:,}",
                             numCacheGets - prevStats.numCacheGets)
           << std::endl;
       out << folly::sformat("Overall Hit Ratio in pct: {:6.2f}", overallHitRatio)
           << std::endl;
-
-      const double ramHitRatio =
-          invertPctFn(numCacheGetMiss - prevStats.numCacheGetMiss,
-                      numCacheGets - prevStats.numCacheGets);
-      const double nvmHitRatio =
-          invertPctFn(numNvmGetMiss - prevStats.numNvmGetMiss,
-                      numNvmGets - prevStats.numNvmGets);
 
       out << folly::sformat(
           "RAM Hit Ratio in pct: {:6.2f}\n"
@@ -622,7 +654,7 @@ struct Stats {
  private:
   static double pctFn(uint64_t ops, uint64_t total) {
     return total == 0
-               ? 100.0
+               ? 0
                : 100.0 * static_cast<double>(ops) / static_cast<double>(total);
   }
 

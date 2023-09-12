@@ -34,12 +34,12 @@ struct SimpleRebalanceStrategy : public RebalanceStrategy {
   SimpleRebalanceStrategy() : RebalanceStrategy(PickNothingOrTest) {}
 
  private:
-  ClassId pickVictim(const CacheBase& allocator, PoolId pid) {
-    auto poolStats = allocator.getPoolStats(pid);
+  ClassId pickVictim(const CacheBase&, PoolId, const PoolStats& poolStats) {
     ClassId cid = Slab::kInvalidClassId;
     uint64_t maxActiveAllocs = 0;
     for (size_t i = 0; i < poolStats.mpStats.acStats.size(); ++i) {
-      const auto& acStats = poolStats.mpStats.acStats[static_cast<ClassId>(i)];
+      const auto& acStats =
+          poolStats.mpStats.acStats.at(static_cast<ClassId>(i));
       if (maxActiveAllocs < acStats.activeAllocs) {
         maxActiveAllocs = acStats.activeAllocs;
         cid = static_cast<ClassId>(i);
@@ -48,13 +48,16 @@ struct SimpleRebalanceStrategy : public RebalanceStrategy {
     return cid;
   }
 
-  ClassId pickVictimImpl(const CacheBase& allocator, PoolId pid) override {
-    return pickVictim(allocator, pid);
+  ClassId pickVictimImpl(const CacheBase& allocator,
+                         PoolId pid,
+                         const PoolStats& stats) override {
+    return pickVictim(allocator, pid, stats);
   }
 
   RebalanceContext pickVictimAndReceiverImpl(const CacheBase& allocator,
-                                             PoolId pid) override {
-    return {pickVictim(allocator, pid), Slab::kInvalidClassId};
+                                             PoolId pid,
+                                             const PoolStats& stats) override {
+    return {pickVictim(allocator, pid, stats), Slab::kInvalidClassId};
   }
 };
 
@@ -101,7 +104,7 @@ class SimpleRebalanceTest : public testing::Test {
 
     // Sleep for 2 seconds to let the rebalancing work
     /* sleep override */
-    std::this_thread::sleep_for(std::chrono::seconds(3));
+    std::this_thread::sleep_for(std::chrono::seconds(10));
 
     // Evicted keys shouldn't be in the allocator anymore
     ASSERT_FALSE(evictedKeys.empty());

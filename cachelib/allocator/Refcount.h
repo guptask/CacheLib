@@ -140,9 +140,9 @@ class FOLLY_PACK_ATTR RefcountWithFlags {
   // @return true if refcount is bumped. false otherwise (if item is exclusive)
   // @throw  exception::RefcountOverflow if new count would be greater than
   // maxCount
-  FOLLY_ALWAYS_INLINE incResult incRef(bool failIfMoving) {
+  FOLLY_ALWAYS_INLINE incResult incRef() {
     incResult res = incOk;
-    auto predicate = [failIfMoving, &res](const Value curValue) {
+    auto predicate = [&res](const Value curValue) {
        Value bitMask = getAdminRef<kExclusive>();
 
        const bool exlusiveBitIsSet = curValue & bitMask;
@@ -151,7 +151,7 @@ class FOLLY_PACK_ATTR RefcountWithFlags {
        } else if (exlusiveBitIsSet && (curValue & kAccessRefMask) == 0) {
          res = incFailedEviction;
          return false;
-       } else if (exlusiveBitIsSet && failIfMoving) {
+       } else if (exlusiveBitIsSet) {
          res = incFailedMoving;
          return false;
        }
@@ -259,37 +259,42 @@ class FOLLY_PACK_ATTR RefcountWithFlags {
 
   /**
    * The following two functions correspond to whether or not an item is
-   * currently in the process of being evicted. When item is marked for
-   * eviction, `kExclusive` bit is set and ref count is zero.
+   * currently in the process of being evicted.
    *
-   * An item can only be marked for eviction when `isInMMContainer` and
-   * `isAccessible` return true and item is not already marked for eviction
-   * nor moving and the ref count is 0. This operation is atomic.
+   * An item that is marked for eviction prevents from obtaining a handle to
+   * the item (incRef() will return false). This guarantees that eviction of
+   * marked item will always suceed.
    *
-   * Unmarking eviction does not depend on `isInMMContainer` nor `isAccessible`
+   * An item can only be marked for eviction when `isInMMContainer` returns true
+   * and item does not have `kExclusive` bit set and access ref count is 0.
+   * This operation is atomic.
+   *
+   * When item is marked for  eviction, `kExclusive` bit is set and ref count is
+   * zero.
+   *
+   * Unmarking for eviction clears the `kExclusive` bit. `unamrkForEviction`
+   * does not depend on `isInMMContainer` nor `isAccessible`
    */
   bool markForEviction() noexcept {
-    auto predicate = [](const Value curValue) {
-      Value conditionBitMask = getAdminRef<kLinked>();
-      const bool flagSet = curValue & conditionBitMask;
-      const bool alreadyExclusive = curValue & getAdminRef<kExclusive>();
-      const bool accessible = curValue & getAdminRef<kAccessible>();
+    Value linkedBitMask = getAdminRef<kLinked>();
+    Value exclusiveBitMask = getAdminRef<kExclusive>();
 
-      if (!flagSet || alreadyExclusive) {
+    auto predicate = [linkedBitMask, exclusiveBitMask](const Value curValue) {
+      const bool unlinked = !(curValue & linkedBitMask);
+      const bool alreadyExclusive = curValue & exclusiveBitMask;
+
+      if (unlinked || alreadyExclusive) {
         return false;
       }
       if ((curValue & kAccessRefMask) != 0) {
-        return false;
-      }
-      if (!accessible) {
         return false;
       }
 
       return true;
     };
 
-    auto newValue = [](const Value curValue) {
-      return curValue | getAdminRef<kExclusive>();
+    auto newValue = [exclusiveBitMask](const Value curValue) {
+      return curValue | exclusiveBitMask;
     };
 
     return atomicUpdateValue(predicate, newValue);
@@ -308,27 +313,38 @@ class FOLLY_PACK_ATTR RefcountWithFlags {
 
   /**
    * The following functions correspond to whether or not an item is
-   * currently in the processed of being moved. When moving, internal
-   * ref count is always >= 1 and `kExclusive` bit is set. getRefCount
-   * does not return the extra ref (it can return 0).
+   * currently in the processed of being moved.
+   *
+   * A `moving` item cannot be recycled nor freed to the allocator. It has
+   * to be unmarked first.
+   *
+   * When moving, internal ref count is always >= 1 and `kExclusive` bit is set
+   * getRefCount does not return the extra ref (it may return 0).
    *
    * An item can only be marked moving when `isInMMContainer` returns true
-   * and item is not already marked for eviction nor moving.
+   * and does not have `kExclusive` bit set.
    *
    * User can also query if an item "isOnlyMoving". This returns true only
    * if the refcount is one and only the exlusive bit is set.
    *
-   * Unmarking moving does not depend on `isInMMContainer`
+   * Unmarking clears `kExclusive` bit and decreses the interanl refCount by 1.
+   * `unmarkMoving` does does not depend on `isInMMContainer`
    */
-  bool markMoving(bool failIfRefNotZero) {
-    auto predicate = [failIfRefNotZero](const Value curValue) {
-      Value conditionBitMask = getAdminRef<kLinked>();
-      const bool flagSet = curValue & conditionBitMask;
-      const bool alreadyExclusive = curValue & getAdminRef<kExclusive>();
-      if (failIfRefNotZero && (curValue & kAccessRefMask) != 0) {
+  bool markMoving() {
+    Value linkedBitMask = getAdminRef<kLinked>();
+    Value exclusiveBitMask = getAdminRef<kExclusive>();
+    Value isChainedItemFlag = getFlag<kIsChainedItem>();
+
+    auto predicate = [linkedBitMask, exclusiveBitMask, isChainedItemFlag](const Value curValue) {
+      const bool unlinked = !(curValue & linkedBitMask);
+      const bool alreadyExclusive = curValue & exclusiveBitMask;
+      const bool isChained = curValue & isChainedItemFlag;
+
+      // chained item can have ref count == 1, this just means it's linked in the chain
+      if ((curValue & kAccessRefMask) > isChained ? 1 : 0) {
         return false;
       }
-      if (!flagSet || alreadyExclusive) {
+      if (unlinked || alreadyExclusive) {
         return false;
       }
       if (UNLIKELY((curValue & kAccessRefMask) == (kAccessRefMask))) {
@@ -338,11 +354,11 @@ class FOLLY_PACK_ATTR RefcountWithFlags {
       return true;
     };
 
-    auto newValue = [](const Value curValue) {
+    auto newValue = [exclusiveBitMask](const Value curValue) {
       // Set exclusive flag and make the ref count non-zero (to distinguish
       // from exclusive case). This extra ref will not be reported to the
       // user
-      return (curValue + static_cast<Value>(1)) | getAdminRef<kExclusive>();
+      return (curValue + static_cast<Value>(1)) | exclusiveBitMask;
     };
 
     return atomicUpdateValue(predicate, newValue);
@@ -373,8 +389,13 @@ class FOLLY_PACK_ATTR RefcountWithFlags {
     return (raw & getAdminRef<kExclusive>()) && ((raw & kAccessRefMask) != 0);
   }
 
-  /** This function attempts to mark item for eviction.
-   * Can only be called on the item that is moving.*/
+  /**
+   * This function attempts to mark item for eviction.
+   * Can only be called on the item that is moving.
+   *
+   * Returns true and marks the item for eviction only if item isOnlyMoving.
+   * Leaves the item marked as moving and returns false otherwise.
+   */
   bool markForEvictionWhenMoving() {
     XDCHECK(isMoving());
 
@@ -393,7 +414,7 @@ class FOLLY_PACK_ATTR RefcountWithFlags {
   bool isOnlyMoving() const noexcept {
     // An item is only moving when its refcount is one and only the exclusive
     // bit among all the control bits is set. This indicates an item is already
-    // on its way out of cache and does not need to be moved.
+    // on its way out of cache.
     auto ref = getRefWithAccessAndAdmin();
     Value valueWithoutExclusiveBit = ref & ~getAdminRef<kExclusive>();
     if (valueWithoutExclusiveBit != 1) {

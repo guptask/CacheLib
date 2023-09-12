@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Intel Corporation
+ * Copyright (c) Meta Platforms, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ constexpr size_t MB = 1024ULL * 1024ULL;
 constexpr size_t GB = MB * 1024ULL;
 
 const size_t defaultTotalCacheSize{1 * GB};
-const std::string defaultCacheDir{"/tmp/metadataDir"};
+const std::string defaultCacheDir{"/var/metadataDir"};
 
 template <typename Allocator>
 class MemoryTiersTest : public AllocatorTest<Allocator> {

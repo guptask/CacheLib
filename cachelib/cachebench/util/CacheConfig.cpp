@@ -52,6 +52,7 @@ CacheConfig::CacheConfig(const folly::dynamic& configJson) {
   JSONSetVal(configJson, useCombinedLockForIterators);
   
   JSONSetVal(configJson, insertToFirstFreeTier);
+  JSONSetVal(configJson, useHandleForBgSync);
 
   JSONSetVal(configJson, lru2qHotPct);
   JSONSetVal(configJson, lru2qColdPct);
@@ -174,7 +175,7 @@ std::shared_ptr<BackgroundMoverStrategy> CacheConfig::getBackgroundEvictorStrate
   if (backgroundEvictorStrategy == "threshold") {
     return std::make_shared<FreeThresholdStrategy>(lowEvictionAcWatermark, highEvictionAcWatermark, maxEvictionBatch, minEvictionBatch);
   } else if (backgroundEvictorStrategy == "fixed") {
-    return std::make_shared<DefaultBackgroundMoverStrategy>(maxEvictionBatch);
+    return std::make_shared<DefaultBackgroundMoverStrategy>(maxEvictionBatch, highEvictionAcWatermark);
   } else {
     return std::make_shared<FreeThresholdStrategy>(lowEvictionAcWatermark, highEvictionAcWatermark, maxEvictionBatch, minEvictionBatch);
   }

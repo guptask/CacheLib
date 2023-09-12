@@ -78,22 +78,22 @@ struct PoolEvictionAgeStats {
 // Stats for MM container
 struct MMContainerStat {
   // number of elements in the container.
-  size_t size;
+  size_t size{0};
 
   // what is the unix timestamp in seconds of the oldest element existing in
   // the container.
-  uint64_t oldestTimeSec;
+  uint64_t oldestTimeSec{0};
 
   // refresh time for LRU
-  uint64_t lruRefreshTime;
+  uint64_t lruRefreshTime{0};
 
   // TODO: Make the MMContainerStat generic by moving the Lru/2Q specific
   // stats inside MMType and exporting them through a generic stats interface.
   // number of hits in each lru.
-  uint64_t numHotAccesses;
-  uint64_t numColdAccesses;
-  uint64_t numWarmAccesses;
-  uint64_t numTailAccesses;
+  uint64_t numHotAccesses{0};
+  uint64_t numColdAccesses{0};
+  uint64_t numWarmAccesses{0};
+  uint64_t numTailAccesses{0};
 
   // aggregate stats together (accross tiers)
   MMContainerStat& operator+=(const MMContainerStat& other);
@@ -143,10 +143,8 @@ struct CacheStat {
   // the stats from the mm container
   MMContainerStat containerStat;
 
-  uint64_t numItems() const noexcept { return numEvictableItems(); }
-
   // number of elements in this MMContainer
-  size_t numEvictableItems() const noexcept { return containerStat.size; }
+  uint64_t numItems() const noexcept { return containerStat.size; }
 
   // total number of evictions.
   uint64_t numEvictions() const noexcept {
@@ -222,9 +220,6 @@ struct PoolStats {
 
   // number of all items in this pool
   uint64_t numItems() const noexcept;
-
-  // number of evictable items
-  uint64_t numEvictableItems() const noexcept;
 
   // total number of allocations currently in this pool
   uint64_t numActiveAllocs() const noexcept;
@@ -314,6 +309,25 @@ struct ReaperStats {
   uint64_t avgTraversalTimeMs{0};
 };
 
+// Stats for reaper
+struct RebalancerStats {
+  uint64_t numRuns{0};
+
+  uint64_t numRebalancedSlabs{0};
+
+  uint64_t lastRebalanceTimeMs{0};
+  uint64_t avgRebalanceTimeMs{0};
+
+  uint64_t lastReleaseTimeMs{0};
+  uint64_t avgReleaseTimeMs{0};
+
+  uint64_t lastPickTimeMs{0};
+  uint64_t avgPickTimeMs{0};
+  
+  // aggregate stats together (accross tiers)
+  RebalancerStats& operator+=(const RebalancerStats& other);
+};
+
 // Mover Stats
 struct BackgroundMoverStats {
   // the number of items this worker moved by looking at pools/classes stats
@@ -347,7 +361,6 @@ struct BackgroundMoverStats {
   uint64_t avgTraversalTimeNs{0};
 
 };
-
 
 // CacheMetadata type to export
 struct CacheMetadata {
@@ -538,6 +551,8 @@ struct GlobalCacheStats {
 
   // latency and percentile stats of various cachelib operations
   util::PercentileStats::Estimates allocateLatencyNs{};
+  util::PercentileStats::Estimates bgEvictLatencyNs{};
+  util::PercentileStats::Estimates bgPromoteLatencyNs{};
   util::PercentileStats::Estimates moveChainedLatencyNs{};
   util::PercentileStats::Estimates moveRegularLatencyNs{};
   util::PercentileStats::Estimates nvmLookupLatencyNs{};
@@ -580,6 +595,9 @@ struct GlobalCacheStats {
 
   // stats related to the reaper
   ReaperStats reaperStats;
+
+  // stats related to the pool rebalancer
+  RebalancerStats rebalancerStats;
 
   uint64_t numNvmRejectsByExpiry{};
   uint64_t numNvmRejectsByClean{};

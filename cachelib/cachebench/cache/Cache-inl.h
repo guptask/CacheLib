@@ -106,6 +106,7 @@ Cache<Allocator>::Cache(const CacheConfig& config,
   }
 
   allocatorConfig_.insertToFirstFreeTier = config_.insertToFirstFreeTier;
+  allocatorConfig_.useHandleForBgSync = config_.useHandleForBgSync;
 
   auto cleanupGuard = folly::makeGuard([&] {
     if (!nvmCacheFilePath_.empty()) {
@@ -145,24 +146,45 @@ Cache<Allocator>::Cache(const CacheConfig& config,
       // already have a file, user provided it. We will also keep it around
       // after the tests.
       auto path = config_.nvmCachePaths[0];
-      if (cachelib::util::isDir(path)) {
+      bool isDir;
+      bool isBlk = false;
+      try {
+        isDir = cachelib::util::isDir(path);
+        if (!isDir) {
+          isBlk = cachelib::util::isBlk(path);
+        }
+      } catch (const std::system_error& e) {
+        XLOGF(INFO, "nvmCachePath {} does not exist", path);
+        isDir = false;
+      }
+
+      if (isDir) {
         const auto uniqueSuffix = folly::sformat("nvmcache_{}_{}", ::getpid(),
                                                  folly::Random::rand32());
         path = path + "/" + uniqueSuffix;
         util::makeDir(path);
         nvmCacheFilePath_ = path;
+        XLOGF(INFO, "Configuring NVM cache: directory {} size {} MB", path,
+              config_.nvmCacheSizeMB);
         nvmConfig.navyConfig.setSimpleFile(path + "/navy_cache",
                                            config_.nvmCacheSizeMB * MB,
                                            true /*truncateFile*/);
       } else {
-        nvmConfig.navyConfig.setSimpleFile(path, config_.nvmCacheSizeMB * MB);
+        XLOGF(INFO, "Configuring NVM cache: simple file {} size {} MB", path,
+              config_.nvmCacheSizeMB);
+        nvmConfig.navyConfig.setSimpleFile(path, config_.nvmCacheSizeMB * MB,
+                                           !isBlk /* truncateFile */);
       }
     } else if (config_.nvmCachePaths.size() > 1) {
+      XLOGF(INFO, "Configuring NVM cache: RAID-0 ({} devices) size {} MB",
+            config_.nvmCachePaths.size(), config_.nvmCacheSizeMB);
       // set up a software raid-0 across each nvm cache path.
       nvmConfig.navyConfig.setRaidFiles(config_.nvmCachePaths,
                                         config_.nvmCacheSizeMB * MB);
     } else {
       // use memory to mock NVM.
+      XLOGF(INFO, "Configuring NVM cache: memory file size {} MB",
+            config_.nvmCacheSizeMB);
       nvmConfig.navyConfig.setMemoryFile(config_.nvmCacheSizeMB * MB);
     }
     nvmConfig.navyConfig.setDeviceMetadataSize(config_.nvmCacheMetadataSizeMB *
@@ -651,7 +673,9 @@ Stats Cache<Allocator>::getStats() const {
   std::map<MemoryDescriptorType, ACStats> allocationClassStats{};
 
   for (size_t pid = 0; pid < pools_.size(); pid++) {
-    auto cids = cache_->getPoolStats(static_cast<PoolId>(pid)).getClassIds();
+    PoolId poolId = static_cast<PoolId>(pid);
+    auto poolStats = cache_->getPoolStats(poolId);
+    auto cids = poolStats.getClassIds();
     for (TierId tid = 0; tid < cache_->getNumTiers(); tid++) {
       for (auto cid : cids) {
         MemoryDescriptorType md(tid,pid,cid);
@@ -716,6 +740,8 @@ Stats Cache<Allocator>::getStats() const {
       static_cast<int64_t>(itemRecords_.count()) - totalDestructor_;
 
   ret.cacheAllocateLatencyNs = cacheStats.allocateLatencyNs;
+  ret.cacheBgEvictLatencyNs = cacheStats.bgEvictLatencyNs;
+  ret.cacheBgPromoteLatencyNs = cacheStats.bgPromoteLatencyNs;
   ret.cacheFindLatencyNs = cacheFindLatency_.estimate();
   ret.cacheBgEvictLatencyNs = cacheStats.bgEvictLatencyNs;
   ret.cacheDmlLargeItemWaitLatencyNs = cacheStats.dmlLargeItemWaitLatencyNs;
@@ -848,8 +874,17 @@ void Cache<Allocator>::setUint64ToItem(WriteHandle& handle,
 template <typename Allocator>
 void Cache<Allocator>::setStringItem(WriteHandle& handle,
                                      const std::string& str) {
-  auto ptr = reinterpret_cast<uint8_t*>(getMemory(handle));
-  std::memcpy(ptr, str.data(), std::min<size_t>(str.size(), getSize(handle)));
+  auto dataSize = getSize(handle);
+  if (dataSize < 1)
+    return;
+
+  auto ptr = reinterpret_cast<char*>(getMemory(handle));
+  std::strncpy(ptr, str.c_str(), dataSize);
+
+  // Make sure the copied string ends with null char
+  if (str.size() + 1 > dataSize) {
+    ptr[dataSize - 1] = '\0';
+  }
 }
 
 template <typename Allocator>

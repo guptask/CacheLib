@@ -116,7 +116,7 @@ class LatencyTracker {
       auto diffNanos =
           std::chrono::duration_cast<std::chrono::nanoseconds>(tp - begin_)
               .count();
-      stats_->trackValue(static_cast<double>(diffNanos / nSamples_), tp);
+      stats_->trackValue(static_cast<double>(diffNanos/nSamples_), tp);
     }
   }
 

@@ -77,7 +77,7 @@ class CacheStressor : public Stressor {
         std::unique_lock<folly::SharedMutex> lock;
 
         CacheStressSyncObj(CacheStressor& s, std::string itemKey)
-            : lock{s.chainedItemAcquireUniqueLock(itemKey)} {}
+            : lock{s.chainedItemTryAcquireUniqueLock(itemKey)} {}
       };
       movingSync = [this](typename CacheT::Item::Key key) {
         return std::make_unique<CacheStressSyncObj>(*this, key.str());
@@ -98,8 +98,14 @@ class CacheStressor : public Stressor {
     }
     cacheConfig.nvmWriteBytesCallback =
         std::bind(&CacheStressor<Allocator>::getNvmBytesWritten, this);
-    cache_ = std::make_unique<CacheT>(cacheConfig, movingSync,
-                                      cacheConfig.cacheDir, config_.touchValue);
+    try {
+      cache_ = std::make_unique<CacheT>(
+          cacheConfig, movingSync, cacheConfig.cacheDir, config_.touchValue);
+    } catch (const std::exception& e) {
+      XLOG(INFO) << "Exception while creating cache: " << e.what();
+      throw;
+    }
+
     if (config_.opPoolDistribution.size() > cache_->numPools()) {
       throw std::invalid_argument(folly::sformat(
           "more pools specified in the test than in the cache. "
@@ -241,6 +247,10 @@ class CacheStressor : public Stressor {
     using Lock = std::unique_lock<folly::SharedMutex>;
     return lockEnabled_ ? Lock{getLock(key)} : Lock{};
   }
+  auto chainedItemTryAcquireUniqueLock(Key key) {
+    using Lock = std::unique_lock<folly::SharedMutex>;
+    return lockEnabled_ ? Lock{getLock(key), std::try_to_lock} : Lock{};
+  }
 
   // populate the input item handle according to the stress setup.
   void populateItem(WriteHandle& handle, const std::string& itemValue = "") {
@@ -254,9 +264,7 @@ class CacheStressor : public Stressor {
     }
 
     if (!itemValue.empty()) {
-      // Add the null character to ensure this is a proper c string.
-      // TODO(T141356292): Clean this up to avoid allocating a new string
-      cache_->setStringItem(handle, itemValue + "\0");
+      cache_->setStringItem(handle, itemValue);
     } else {
       cache_->setStringItem(handle, hardcodedString_);
     }
@@ -301,8 +309,11 @@ class CacheStressor : public Stressor {
         SCOPE_EXIT { throttleFn(); };
           // detect refcount leaks when run in  debug mode.
 #ifndef NDEBUG
-        auto checkCnt = [](int cnt) {
-          if (cnt != 0) {
+        auto checkCnt = [useCombinedLockForIterators =
+                             config_.useCombinedLockForIterators](int cnt) {
+          // if useCombinedLockForIterators is set handle count can be modified
+          // by a different thread
+          if (!useCombinedLockForIterators && cnt != 0) {
             throw std::runtime_error(folly::sformat("Refcount leak {}", cnt));
           }
         };

@@ -107,7 +107,7 @@ There will be a section discussing each of the bullets below.
    * For regular cache: Find the item in the chained hash map. From the item, get the slab it lives on and form the slab, identify the allocation class and promote the item on that particular LRU queue. Increment the refcount and return the item handle.
 ## Flash overview
 
-Flash is organized in a similar way: there is a cache for smaller items (BigHash) and for larger item (Block Cache). Unlike DRAM, the client does not get to choose where the item goes. It's done automatically thresholding the size. Together, this constitutes [Navy](/docs/Cache_Library_Architecture_Guide/Navy_Architecture_Overview ) -- the flash cache engine of CacheLib.
+Flash is organized in a similar way: there is a cache for smaller items (BigHash) and for larger item (Block Cache). Unlike DRAM, the client does not get to choose where the item goes. It's done automatically thresholding the size. Together, this constitutes [Navy](/docs/Cache_Library_Architecture_Guide/Navy_Overview ) -- the flash cache engine of CacheLib.
 
 * "block device" refers to devices that's read/write happen with a fixed size block (if it helps, substitute the word "page" here). It means you can't write with precision of bytes but have to incur overhead if you don't write an entire block.
 
@@ -129,7 +129,7 @@ The space managed by BigHash is divided into buckets.
 The space managed by BlockCache is divided into regions of the same size (default 16MB, max 256MB).
 
 * Writes: There is an in memory buffer. Once the buffer is full, it gets flushed into a region on the flash storage. If it helps you understand, this is like the LSM tree in storage engine, except there won't be "merging" later.
-* Reads: Each item is stored in a B tree index in memory. When a read is performed, the region that item is in is promoted in the FIFO queue in memory. Unlike DRAM where each allocation class has its own queue, we have one single queue for all the regions across all size classes.
+* Reads: There is an in memory index for all the items in the form of an array of sparse maps. When a read is performed, the region that item is in is promoted in the FIFO queue in memory. Unlike DRAM where each allocation class has its own queue, we have one single queue for all the regions across all size classes.
 * Evictions/Removal: Evictions happens for the entire region. There are three eviction policies: LRU, FIFO and segmented FIFO. In case of LRU, promotion happens at the region level as well, which means if an item is accessed, the entire region is promoted. Item removal issued from the client would result in the item key being removed from the index tree and the reclamation of the space happens with the region eviction.
 * There are some similarities between BlockCache and the regular DRAM cache:
    * A region is similar to a slab in DRAM. It is a fixed size piece of space/memory where all items are of the same size. The difference is that for DRAM, item is the unit of eviction but for flash it's the entire region.

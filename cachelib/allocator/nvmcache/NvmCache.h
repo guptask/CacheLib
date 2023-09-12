@@ -111,7 +111,7 @@ class NvmCache {
 
     // when enabled, nvmcache will attempt to resolve misses without incurring
     // thread hops by using synchronous methods.
-    bool enableFastNegativeLookups{false};
+    bool enableFastNegativeLookups{true};
 
     // serialize the config for debugging purposes
     std::map<std::string, std::string> serialize() const;
@@ -158,7 +158,7 @@ class NvmCache {
   PutToken createPutToken(folly::StringPiece key);
 
   // store the given item in navy
-  // @param item        cache item
+  // @param item        reference to cache item
   // @param token       the put token for the item. this must have been
   //                    obtained before enqueueing the put to maintain
   //                    consistency

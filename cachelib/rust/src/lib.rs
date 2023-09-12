@@ -47,7 +47,6 @@ mod ffi {
             oncall: &CxxString,
         ) -> Result<UniquePtr<CacheAdmin>>;
 
-        #[namespace = "facebook::cachelib"]
         type LruAllocator;
         fn make_lru_allocator(
             config: UniquePtr<LruAllocatorConfig>,
@@ -137,7 +136,7 @@ mod ffi {
             cache: &LruAllocator,
             id: i8,
             key: StringPiece<'_>,
-            size: usize,
+            size: u32,
             ttl_secs: u32,
         ) -> Result<UniquePtr<LruItemHandle>>;
 

@@ -114,6 +114,8 @@ void Stats::populateGlobalCacheStats(GlobalCacheStats& ret) const {
   ret.numNvmItemDestructorAllocErrors = numNvmItemDestructorAllocErrors.get();
 
   ret.allocateLatencyNs = this->allocateLatency_.estimate();
+  ret.bgEvictLatencyNs = this->bgEvictLatency_.estimate();
+  ret.bgPromoteLatencyNs = this->bgPromoteLatency_.estimate();
   ret.moveChainedLatencyNs = this->moveChainedLatency_.estimate();
   ret.moveRegularLatencyNs = this->moveRegularLatency_.estimate();
   ret.nvmLookupLatencyNs = this->nvmLookupLatency_.estimate();
@@ -393,14 +395,6 @@ uint64_t PoolStats::maxEvictionAge() const {
                                    b.second.getEvictionAge();
                           })
       ->second.getEvictionAge();
-}
-
-uint64_t PoolStats::numEvictableItems() const noexcept {
-  uint64_t n = 0;
-  for (const auto& s : cacheStats) {
-    n += s.second.numEvictableItems();
-  }
-  return n;
 }
 
 double CCacheStats::hitRatio() const {

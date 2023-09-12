@@ -245,10 +245,12 @@ class CacheAllocatorConfig {
   // slab memory distributed across different allocation classes. For example,
   // if the 64 bytes allocation classes are receiving for allocation requests,
   // eventually CacheAllocator will move more memory to it from other allocation
-  // classes. For more details, see our user guide.
+  // classes. The rebalancing is triggered every specified interval and
+  // optionally on allocation failures. For more details, see our user guide.
   CacheAllocatorConfig& enablePoolRebalancing(
       std::shared_ptr<RebalanceStrategy> defaultRebalanceStrategy,
-      std::chrono::milliseconds interval);
+      std::chrono::milliseconds interval,
+      bool disableForcedWakeup = false);
 
   // This lets you change pool size during runtime, and the pool resizer
   // will slowly adjust each pool's memory size to the newly configured sizes.
@@ -266,6 +268,16 @@ class CacheAllocatorConfig {
       std::chrono::seconds regularInterval,
       std::chrono::seconds ccacheInterval,
       uint32_t ccacheStepSizePercent);
+  
+  // Enable the background evictor - scans a tier to look for objects
+  // to evict to the next tier
+  CacheAllocatorConfig& enableBackgroundEvictor(
+      std::shared_ptr<BackgroundMoverStrategy> backgroundMoverStrategy,
+      std::chrono::milliseconds regularInterval, size_t threads);
+
+  CacheAllocatorConfig& enableBackgroundPromoter(
+      std::shared_ptr<BackgroundMoverStrategy> backgroundMoverStrategy,
+      std::chrono::milliseconds regularInterval, size_t threads);
 
   // Enable DSA
   CacheAllocatorConfig& enableDSA(bool useDsa);
@@ -314,6 +326,8 @@ class CacheAllocatorConfig {
 
   // Insert items to first free memory tier
   CacheAllocatorConfig& enableInsertToFirstFreeTier();
+  
+  CacheAllocatorConfig& enableUseHandleForBgSync();
 
   // Passes in a callback to initialize an event tracker when the allocator
   // starts
@@ -464,6 +478,9 @@ class CacheAllocatorConfig {
   // time interval to sleep between iterators of rebalancing the pools.
   std::chrono::milliseconds poolRebalanceInterval{std::chrono::seconds{1}};
 
+  // disable waking up the PoolRebalancer on alloc failures
+  bool poolRebalancerDisableForcedWakeUp{false};
+
   // Free slabs pro-actively if the ratio of number of freeallocs to
   // the number of allocs per slab in a slab class is above this
   // threshold
@@ -535,6 +552,10 @@ class CacheAllocatorConfig {
   // if turned on, insert new element to first free memory tier or evict memory
   // from the bottom one if memory cache is full
   bool insertToFirstFreeTier = false;
+  
+  // if false, we use the moving bit sync for background data movement 
+  // if true, we use item handle as sync for background data movement
+  bool useHandleForBgSync = false;
 
   // the number of tries to search for an item to evict
   // 0 means it's infinite
@@ -674,6 +695,12 @@ class CacheAllocatorConfig {
 template <typename T>
 CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enableInsertToFirstFreeTier() {
   insertToFirstFreeTier = true;
+  return *this;
+}
+
+template <typename T>
+CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enableUseHandleForBgSync() {
+  useHandleForBgSync = true;
   return *this;
 }
 
@@ -986,10 +1013,12 @@ CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enablePoolOptimizer(
 template <typename T>
 CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enablePoolRebalancing(
     std::shared_ptr<RebalanceStrategy> defaultRebalanceStrategy,
-    std::chrono::milliseconds interval) {
+    std::chrono::milliseconds interval,
+    bool disableForcedWakeup) {
   if (validateStrategy(defaultRebalanceStrategy)) {
     defaultPoolRebalanceStrategy = defaultRebalanceStrategy;
     poolRebalanceInterval = interval;
+    poolRebalancerDisableForcedWakeUp = disableForcedWakeup;
   } else {
     throw std::invalid_argument(
         "Invalid rebalance strategy for the cache allocator.");
@@ -1261,6 +1290,7 @@ std::map<std::string, std::string> CacheAllocatorConfig<T>::serialize() const {
   configMap["delayCacheWorkersStart"] =
       delayCacheWorkersStart ? "true" : "false";
   configMap["insertToFirstFreeTier"] = std::to_string(insertToFirstFreeTier);
+  configMap["useHandleForBgSync"] = std::to_string(useHandleForBgSync);
   mergeWithPrefix(configMap, throttleConfig.serialize(), "throttleConfig");
   mergeWithPrefix(configMap,
                   chainedItemAccessConfig.serialize(),
