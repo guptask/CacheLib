@@ -37,35 +37,35 @@ struct LruCacheTrait {
   using MMType = MMLru;
   using AccessType = ChainedHashTable;
   using AccessTypeLocks = SharedMutexBuckets;
-  using CompressedPtrType = CompressedPtr4B;
+  using CompressedPtrType = CompressedPtr5B;
 };
 
 struct LruCacheWithSpinBucketsTrait {
   using MMType = MMLru;
   using AccessType = ChainedHashTable;
   using AccessTypeLocks = SpinBuckets;
-  using CompressedPtrType = CompressedPtr4B;
+  using CompressedPtrType = CompressedPtr5B;
 };
 
 struct Lru2QCacheTrait {
   using MMType = MM2Q;
   using AccessType = ChainedHashTable;
   using AccessTypeLocks = SharedMutexBuckets;
-  using CompressedPtrType = CompressedPtr4B;
+  using CompressedPtrType = CompressedPtr5B;
 };
 
 struct TinyLFUCacheTrait {
   using MMType = MMTinyLFU;
   using AccessType = ChainedHashTable;
   using AccessTypeLocks = SharedMutexBuckets;
-  using CompressedPtrType = CompressedPtr4B;
+  using CompressedPtrType = CompressedPtr5B;
 };
 
 struct WTinyLFUCacheTrait {
   using MMType = MMWTinyLFU;
   using AccessType = ChainedHashTable;
   using AccessTypeLocks = SharedMutexBuckets;
-  using CompressedPtrType = CompressedPtr4B;
+  using CompressedPtrType = CompressedPtr5B;
 };
 
 struct Lru5BCacheTrait {
