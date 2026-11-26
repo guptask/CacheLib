@@ -3362,6 +3362,64 @@ TEST_F(NvmCacheTest, AccessTimeMapSurvivesWarmRoll) {
   EXPECT_EQ(savedTime, *recoveredTime);
 }
 
+TEST_F(NvmCacheTest, RootSlabDemoteAndPromote) {
+  getConfig().enableRootSlabTier(RootSlabTierConfig{});
+  auto& nvm = makeCache();
+  const auto pid = poolId();
+
+  // two slabs of 20KB allocations fill the 8MB pool.
+  const uint64_t rootA = 1, rootB = 2, rootC = 3;
+  const uint32_t kItems = 150;
+  const uint32_t kSize = 15 * 1024;
+  auto fill = [&](uint64_t root, const std::string& prefix) {
+    for (uint32_t i = 0; i < kItems; i++) {
+      auto it = nvm.allocateWithRoot(pid, root, fmt::format("{}{}", prefix, i),
+                                     kSize);
+      ASSERT_NE(nullptr, it);
+      std::memset(it->getMemory(), static_cast<int>(root), kSize);
+      nvm.insertOrReplace(it);
+    }
+  };
+  fill(rootA, "a");
+  fill(rootB, "b");
+
+  // A is the coldest root, then B, then C.
+  bumpRootHotness(rootB, 300);
+  bumpRootHotness(rootC, 800);
+
+  // C needs a slab: the coldest root, A, is evicted to navy as a whole.
+  {
+    auto it = nvm.allocateWithRoot(pid, rootC, "c0", kSize);
+    ASSERT_NE(nullptr, it);
+    nvm.insertOrReplace(it);
+  }
+  auto stats = nvm.getRootSlabTierStats();
+  EXPECT_EQ(1u, stats.slabsDemoted);
+  EXPECT_EQ(kItems, stats.itemsDemoted);
+  EXPECT_EQ(1u, stats.imagesInNvm);
+  for (uint32_t i = 0; i < kItems; i++) {
+    EXPECT_EQ(nullptr, nvm.findFast(fmt::format("a{}", i)));
+  }
+  EXPECT_NE(nullptr, nvm.findFast("b0"));
+
+  // A turns hot and one of its keys is read: its slab comes back and the now
+  // coldest root, B, makes room.
+  bumpRootHotness(rootA, 600);
+  auto hdl = nvm.findWithRoot("a7", rootA);
+  ASSERT_NE(nullptr, hdl);
+  EXPECT_EQ(static_cast<char>(rootA), *static_cast<const char*>(hdl->getMemory()));
+  hdl.reset();
+
+  stats = nvm.getRootSlabTierStats();
+  EXPECT_EQ(1u, stats.slabsPromoted);
+  EXPECT_EQ(2u, stats.slabsDemoted);
+  EXPECT_EQ(kItems, stats.itemsPromoted);
+  for (uint32_t i = 0; i < kItems; i++) {
+    EXPECT_NE(nullptr, nvm.findFast(fmt::format("a{}", i)));
+  }
+  EXPECT_EQ(nullptr, nvm.findFast("b0"));
+}
+
 } // namespace tests
 } // namespace cachelib
 } // namespace facebook

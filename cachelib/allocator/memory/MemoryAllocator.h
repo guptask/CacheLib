@@ -179,14 +179,30 @@ class MemoryAllocator {
 
   // allocate memory of corresponding size.
   //
-  // @param id    the pool id to be used for this allocation.
-  // @param size  the size for the allocation.
+  // @param id        the pool id to be used for this allocation.
+  // @param size      the size for the allocation.
+  // @param rootHash  root prefix hash of the allocation. All allocations of a
+  //                  non-zero root are placed in slabs owned by that root, and
+  //                  those slabs hold nothing else.
   // @return pointer to the memory corresponding to the allocation. nullptr if
   // memory is not available.
   //
   // @throw std::invalid_argument if the poolId is invalid or the size is
   //        invalid.
-  void* allocate(PoolId id, uint32_t size);
+  void* allocate(PoolId id, uint32_t size, uint64_t rootHash = kNoRootHash);
+
+  // @param memory  memory belonging to the slab allocator
+  // @return        root prefix hash of the slab holding the memory, or
+  //                kNoRootHash.
+  // @throw std::invalid_argument if the memory doesn't belong to allocator
+  FOLLY_ALWAYS_INLINE uint64_t getRootHash(const void* memory) const {
+    const auto* header = slabAllocator_.getSlabHeader(memory);
+    if (!header) {
+      throw std::invalid_argument(
+          fmt::format("invalid header for slab memory addr: {}", memory));
+    }
+    return header->getRootHash();
+  }
 
   // Allocate a zeroed Slab
   //

@@ -102,6 +102,9 @@ class AllocationClass {
   // fetch stats about this allocation class.
   ACStats getStats() const;
 
+  // @return  every slab of this class that is owned by a root, with its root.
+  std::vector<std::pair<uint64_t, Slab*>> getRootSlabs() const;
+
   // returns the number of slabs this allocation class owns, in use or free.
   size_t getNumSlabs() const {
     return lock_->lock_combine(
@@ -116,10 +119,15 @@ class AllocationClass {
   // allocate memory corresponding to the allocation size of this
   // AllocationClass.
   //
+  // @param rootHash  root prefix hash of the allocation. Allocations with the
+  //                  same non-zero rootHash are only carved from, and only
+  //                  reuse freed memory of, slabs owned by that root.
+  //                  kNoRootHash allocates from slabs that no root owns.
+  //
   // @return  ptr to the memory of allocationSize_ chunk or nullptr if we
   //          don't have any free memory. The caller will have to add a slab
   //          to this slab class to make further allocations out of it.
-  void* allocate();
+  void* allocate(uint64_t rootHash = kNoRootHash);
 
   // @param ctx     release context for the slab owning this alloc
   // @param memory  memory to check
@@ -226,9 +234,10 @@ class AllocationClass {
   void addSlab(Slab* slab);
 
   // acquires a new slab and return an allocation right away.
-  // @param slab    a new slab to be added. This can NOT be nullptr.
+  // @param slab      a new slab to be added. This can NOT be nullptr.
+  // @param rootHash  root prefix the allocation is for, see allocate().
   // @return  new allocation. This cannot fail.
-  void* addSlabAndAllocate(Slab* slab);
+  void* addSlabAndAllocate(Slab* slab, uint64_t rootHash = kNoRootHash);
 
   // Releasing a slab is a two step process.
   // 1. Mark a slab for release, by calling `startSlabRelease`.
@@ -423,7 +432,10 @@ class AllocationClass {
   // @return  ptr to the memory of allocationSize_ chunk or nullptr if we
   //          don't have any free memory. The caller will have to add a slab
   //          to this slab class to make further allocations out of it.
-  void* allocateLocked();
+  void* allocateLocked(uint64_t rootHash);
+
+  // allocateLocked() for a non-zero root.
+  void* allocateForRootLocked(uint64_t rootHash);
 
   // lock for serializing access to currSlab_, currOffset_, allocatedSlabs_,
   // freeSlabs_, freedAllocations_.
@@ -474,6 +486,70 @@ class AllocationClass {
   using FreeList = SList<FreeAlloc, &FreeAlloc::hook_>;
 #endif
   FreeList freedAllocations_;
+
+  // Allocation state of one root prefix: the slab it carves from and the
+  // allocations freed from the slabs it owns. Kept only while the root owns at
+  // least one slab.
+  struct RootState {
+    RootState(const SlabAllocator& s, [[maybe_unused]] uint32_t allocSize)
+        : freed{s.createPtrCompressor<FreeAlloc, CompressedPtr5B>()
+#if FOLLY_SANITIZE_ADDRESS
+                    ,
+                s.isAsanPoisoningEnabled() ? allocSize : 0
+#endif
+          } {
+    }
+
+    RootState(const SlabAllocator& s,
+              [[maybe_unused]] uint32_t allocSize,
+              const serialization::AllocationClassRootObject& object)
+        : currSlab(s.getSlabForIdx(*object.currSlabIdx())),
+          currOffset(static_cast<uint32_t>(*object.currOffset())),
+          freed{*object.freedAllocationsObject(),
+                s.createPtrCompressor<FreeAlloc, CompressedPtr5B>()
+#if FOLLY_SANITIZE_ADDRESS
+                    ,
+                s.isAsanPoisoningEnabled() ? allocSize : 0
+#endif
+          } {
+    }
+
+    Slab* currSlab{nullptr};
+    uint32_t currOffset{0};
+    FreeList freed;
+    // slabs of this class owned by the root.
+    uint32_t numSlabs{0};
+    // whether the root can allocate without a new slab; see rootsWithSpace_.
+    bool hasSpace{false};
+  };
+
+  // per-root state for roots that own slabs of this class.
+  std::unordered_map<uint64_t, RootState> roots_;
+
+  // number of roots in roots_ with hasSpace set.
+  size_t rootsWithSpace_{0};
+
+  // the list of freed allocations of the slabs owned by rootHash.
+  FreeList& freeListLocked(uint64_t rootHash);
+
+  static bool canAllocateFromRootSlabLocked(const RootState& st,
+                                            uint32_t allocSize) noexcept {
+    return st.currSlab != nullptr &&
+           (st.currOffset + allocSize) <= Slab::kSize;
+  }
+
+  // recomputes st.hasSpace and rootsWithSpace_.
+  void refreshRootSpaceLocked(RootState& st) noexcept;
+
+  // recomputes canAllocate_ from every source of memory in this class.
+  void refreshCanAllocateLocked() noexcept;
+
+  // takes a free slab, assigns it to the root and makes it the root's current
+  // slab. precondition: freeSlabs_ must not be empty.
+  void setupRootSlabLocked(uint64_t rootHash, RootState& st);
+
+  // a slab owned by rootHash left this class.
+  void releaseRootSlabLocked(uint64_t rootHash);
 
   // Partition the 'freeAllocs' into two different SList depending on whether
   // they are in slab memory or outside. Does not take a lock. If access to

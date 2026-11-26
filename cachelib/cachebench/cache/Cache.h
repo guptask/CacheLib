@@ -150,6 +150,19 @@ class Cache {
   // inserts the item into the cache and tracks it.
   WriteHandle insertOrReplace(WriteHandle& handle);
 
+  // @return the root prefix hash of the key, kNoRootHash if root placement is
+  //         off (rootPrefixLen is 0).
+  uint64_t rootOf(folly::StringPiece key) const;
+
+  // Checks that no item sits in a slab owned by another root than its own.
+  // @throw std::runtime_error on a violation
+  void checkRootPlacement();
+
+  // With the root slab tier on, checks that slabs went to navy and came back
+  // and that navy took every image.
+  // @throw std::runtime_error if not
+  void checkRootSlabTier();
+
   // inserts the handle into cache and returns true if the insert was
   // successful, false otherwise. Insert operation can not be performed when
   // consistency checking is enabled.
@@ -550,6 +563,23 @@ Cache<Allocator>::Cache(const CacheConfig& config,
   allocatorConfig_.enablePoolRebalancing(
       config_.getRebalanceStrategy(),
       std::chrono::seconds(config_.poolRebalanceIntervalSec));
+
+  if (config_.enableRootSlabTier) {
+    if (config_.rootPrefixLen == 0 || config_.nvmCacheSizeMB == 0) {
+      throw std::invalid_argument(
+          "enableRootSlabTier needs rootPrefixLen and nvmCacheSizeMB");
+    }
+    RootSlabTierConfig tier;
+    tier.hotnessHalfLifeSecs =
+        static_cast<uint32_t>(config_.rootHotnessHalfLifeSecs);
+    tier.workerInterval =
+        std::chrono::milliseconds(config_.rootSlabWorkerIntervalMs);
+    tier.minFreeSlabsPerPool =
+        static_cast<uint32_t>(config_.rootMinFreeSlabsPerPool);
+    tier.maxSlabsPerIteration =
+        static_cast<uint32_t>(config_.rootMaxSlabsPerIteration);
+    allocatorConfig_.enableRootSlabTier(tier);
+  }
 
   if (config_.moveOnSlabRelease && movingSync != nullptr) {
     allocatorConfig_.enableMovingOnSlabRelease(
@@ -1188,7 +1218,10 @@ typename Cache<Allocator>::WriteHandle Cache<Allocator>::allocate(
     PoolId pid, folly::StringPiece key, size_t size, uint32_t ttlSecs) {
   WriteHandle handle;
   try {
-    handle = cache_->allocate(pid, key, CacheValue::getSize(size), ttlSecs);
+    handle = config_.rootPrefixLen == 0
+                 ? cache_->allocate(pid, key, CacheValue::getSize(size), ttlSecs)
+                 : cache_->allocateWithRoot(pid, rootOf(key), key,
+                                            CacheValue::getSize(size), ttlSecs);
     if (handle) {
       CacheValue::initialize(handle->getMemory());
     }
@@ -1198,6 +1231,65 @@ typename Cache<Allocator>::WriteHandle Cache<Allocator>::allocate(
 
   return handle;
 }
+template <typename Allocator>
+uint64_t Cache<Allocator>::rootOf(folly::StringPiece key) const {
+  if (config_.rootPrefixLen == 0) {
+    return kNoRootHash;
+  }
+  const auto prefix =
+      key.subpiece(0, std::min<size_t>(key.size(), config_.rootPrefixLen));
+  uint64_t hash = 14695981039346656037ULL;
+  for (const char c : prefix) {
+    hash = (hash ^ static_cast<uint8_t>(c)) * 1099511628211ULL;
+  }
+  if (config_.rootCount != 0) {
+    return hash % config_.rootCount + 1;
+  }
+  return hash == kNoRootHash ? 1 : hash;
+}
+
+template <typename Allocator>
+void Cache<Allocator>::checkRootPlacement() {
+  if (config_.rootPrefixLen == 0) {
+    return;
+  }
+  uint64_t items = 0;
+  uint64_t violations = 0;
+  for (auto iter = cache_->begin(); iter != cache_->end(); ++iter) {
+    const auto& item = *iter;
+    const auto slabRoot = cache_->getItemRootHash(item);
+    ++items;
+    // an item filled from navy by plain key sits in a slab without a root
+    if (slabRoot != kNoRootHash && slabRoot != rootOf(item.getKey())) {
+      ++violations;
+    }
+  }
+  XLOGF(INFO, "Root placement check: {} items, {} in a slab of another root",
+        items, violations);
+  if (violations > 0) {
+    throw std::runtime_error(fmt::format(
+        "{} of {} items are in a slab of another root", violations, items));
+  }
+}
+
+template <typename Allocator>
+void Cache<Allocator>::checkRootSlabTier() {
+  if (!config_.enableRootSlabTier) {
+    return;
+  }
+  const auto stats = cache_->getRootSlabTierStats();
+  XLOGF(INFO,
+        "Root slab tier: slabs demoted {} promoted {}, image write failures {}",
+        stats.slabsDemoted, stats.slabsPromoted, stats.imageWriteFailures);
+  if (stats.slabsDemoted == 0 || stats.slabsPromoted == 0 ||
+      stats.imageWriteFailures > 0) {
+    throw std::runtime_error(fmt::format(
+        "root slab tier: {} slabs demoted, {} promoted, {} image write "
+        "failures",
+        stats.slabsDemoted, stats.slabsPromoted, stats.imageWriteFailures));
+  }
+}
+
 template <typename Allocator>
 typename Cache<Allocator>::WriteHandle Cache<Allocator>::insertOrReplace(
     WriteHandle& handle) {
@@ -1253,7 +1345,9 @@ typename Cache<Allocator>::ReadHandle Cache<Allocator>::find(Key key) {
       tracker = util::LatencyTracker(cacheFindLatency_);
     }
     // find from cache and wait for the result to be ready.
-    auto it = cache_->find(key);
+    auto it = config_.rootPrefixLen == 0
+                  ? cache_->find(key)
+                  : cache_->findWithRoot(key, rootOf(key));
     it.wait();
 
     if (touchValueEnabled()) {
@@ -1284,7 +1378,9 @@ Cache<Allocator>::asyncFind(Key key) {
       tracker = util::LatencyTracker(cacheFindLatency_);
     }
     // find from cache, don't wait for the result to be ready.
-    auto it = cache_->find(key);
+    auto it = config_.rootPrefixLen == 0
+                  ? cache_->find(key)
+                  : cache_->findWithRoot(key, rootOf(key));
 
     if (it.isReady()) {
       if (touchValueEnabled()) {
@@ -1340,7 +1436,9 @@ typename Cache<Allocator>::WriteHandle Cache<Allocator>::findToWrite(Key key) {
       tracker = util::LatencyTracker(cacheFindLatency_);
     }
     // find from cache and wait for the result to be ready.
-    auto it = cache_->findToWrite(key);
+    auto it = config_.rootPrefixLen == 0
+                  ? cache_->findToWrite(key)
+                  : cache_->findToWriteWithRoot(key, rootOf(key));
     it.wait();
 
     if (touchValueEnabled()) {
@@ -1467,6 +1565,10 @@ std::unique_ptr<StatsBase> Cache<Allocator>::getStats() const {
     ret.eventTrackerCounters[name] = value;
   }
 
+  ret.rootTierEnabled = config_.enableRootSlabTier;
+  if (ret.rootTierEnabled) {
+    ret.rootTier = cache_->getRootSlabTierStats();
+  }
   ret.allocationClassStats = allocationClassStats;
   ret.numEvictions = aggregate.numEvictions();
   ret.numItems = aggregate.numItems();

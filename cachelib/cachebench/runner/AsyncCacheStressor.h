@@ -161,6 +161,8 @@ class AsyncCacheStressor : public Stressor {
       stressWorker_.join();
     }
     wg_->markShutdown();
+    cache_->checkRootPlacement();
+    cache_->checkRootSlabTier();
     cache_->clearCache(config_.maxInvalidDestructorCount);
   }
 

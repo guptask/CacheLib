@@ -1,0 +1,33 @@
+// @nolint
+// Items of one root prefix share slabs, and no slab holds two roots. cachebench
+// checks the placement of every item in RAM when the run ends and fails on a
+// violation.
+{
+  "cache_config" : {
+    "cacheSizeMB" : 128,
+    "poolRebalanceIntervalSec" : 0,
+    "moveOnSlabRelease" : false,
+    "allocFactor" : 2,
+
+    "numPools" : 1,
+    "poolSizes" : [1.0],
+
+    "rootPrefixLen" : 2,
+    "rootCount" : 16
+  },
+  "test_config" : {
+    "numOps" : 1000000,
+    "numThreads" : 16,
+    "numKeys" : 100000,
+
+    "keySizeRange" : [8, 16],
+    "keySizeRangeProbability" : [1.0],
+
+    "valSizeRange" : [3000, 3200],
+    "valSizeRangeProbability" : [1.0],
+
+    "getRatio" : 0.3,
+    "setRatio" : 0.65,
+    "delRatio" : 0.05
+  }
+}

@@ -29,6 +29,13 @@ CacheConfig::CacheConfig(const folly::dynamic& configJson) {
   JSONSetVal(configJson, allocator);
   JSONSetVal(configJson, cacheDir);
   JSONSetVal(configJson, cacheSizeMB);
+  JSONSetVal(configJson, rootPrefixLen);
+  JSONSetVal(configJson, rootCount);
+  JSONSetVal(configJson, enableRootSlabTier);
+  JSONSetVal(configJson, rootHotnessHalfLifeSecs);
+  JSONSetVal(configJson, rootSlabWorkerIntervalMs);
+  JSONSetVal(configJson, rootMinFreeSlabsPerPool);
+  JSONSetVal(configJson, rootMaxSlabsPerIteration);
   JSONSetVal(configJson, poolRebalanceIntervalSec);
   JSONSetVal(configJson, moveOnSlabRelease);
   JSONSetVal(configJson, rebalanceStrategy);
@@ -196,7 +203,7 @@ CacheConfig::CacheConfig(const folly::dynamic& configJson) {
   // if you added new fields to the configuration, update the JSONSetVal
   // to make them available for the json configs and increment the size
   // below
-  checkCorrectSize<CacheConfig, 1160>();
+  checkCorrectSize<CacheConfig, 1216>();
 
   if (numPools != poolSizes.size()) {
     throw std::invalid_argument(fmt::format(

@@ -182,6 +182,8 @@ class CacheStressor : public CacheStressorBase {
   void finish() override {
     CacheStressorBase::finish();
     stopDramIteratorScheduler();
+    cache_->checkRootPlacement();
+    cache_->checkRootSlabTier();
     cache_->clearCache(config_.maxInvalidDestructorCount);
   }
 

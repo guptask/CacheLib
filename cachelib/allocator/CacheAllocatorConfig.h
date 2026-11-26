@@ -43,6 +43,7 @@
 #include "cachelib/allocator/NvmAdmissionPolicy.h"
 #include "cachelib/allocator/PoolOptimizeStrategy.h"
 #include "cachelib/allocator/RebalanceStrategy.h"
+#include "cachelib/allocator/RootSlabImage.h"
 #include "cachelib/allocator/Util.h"
 #include "cachelib/common/EventInterface.h"
 #include "cachelib/common/EventTracker.h"
@@ -336,6 +337,12 @@ class CacheAllocatorConfig {
       std::chrono::milliseconds interval,
       uint32_t slabsToReleasePerIteration);
 
+  // Track the hotness of root prefixes (see allocateWithRoot). Slabs of the
+  // coldest root are evicted to navy as a whole when a hotter root needs
+  // memory, and promoted back when one of the root's keys is read through
+  // findWithRoot or the root turns hot. Requires a navy cache.
+  CacheAllocatorConfig& enableRootSlabTier(RootSlabTierConfig config);
+
   // Enable pool size optimizer, which automatically adjust pool sizes as
   // traffic changes or new memory added.
   // For now we support different intervals between regular pools and compact
@@ -616,6 +623,9 @@ class CacheAllocatorConfig {
   // trigger updates to the cache workers
   // time interval to sleep between iterations of resizing the pools.
   std::chrono::milliseconds poolResizeInterval{std::chrono::seconds(0)};
+
+  // root slab tier: demote cold root slabs to navy and promote them back.
+  RootSlabTierConfig rootSlabTier;
 
   // number of slabs to be released per pool that is over the limit in each
   // iteration.
@@ -1290,6 +1300,14 @@ CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enableBackgroundPromoter(
   backgroundPromoterStrategy = strategy;
   backgroundPromoterInterval = interval;
   backgroundPromoterThreads = promoterThreads;
+  return *this;
+}
+
+template <typename T>
+CacheAllocatorConfig<T>& CacheAllocatorConfig<T>::enableRootSlabTier(
+    RootSlabTierConfig config) {
+  config.enabled = true;
+  rootSlabTier = config;
   return *this;
 }
 

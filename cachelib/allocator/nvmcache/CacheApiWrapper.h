@@ -18,6 +18,7 @@
 
 #include <folly/Range.h>
 
+#include "cachelib/allocator/memory/Slab.h"
 #include "cachelib/common/EventTracker.h"
 
 namespace facebook {
@@ -95,8 +96,10 @@ class CacheAPIWrapperForNvm {
                                       Key key,
                                       uint32_t size,
                                       uint32_t creationTime,
-                                      uint32_t expiryTime) {
-    return cache.allocateInternal(id, key, size, creationTime, expiryTime);
+                                      uint32_t expiryTime,
+                                      uint64_t rootHash = kNoRootHash) {
+    return cache.allocateInternal(id, key, size, creationTime, expiryTime,
+                                  /* fromBgThread */ false, rootHash);
   }
 
   // Insert the allocated handle into the AccessContainer from nvmcache, making

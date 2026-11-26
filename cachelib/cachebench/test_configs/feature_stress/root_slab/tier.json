@@ -1,0 +1,45 @@
+// @nolint
+// More roots than the cache has slabs, so cold roots are evicted to navy as
+// whole slabs and promoted back on a read of one of their keys. Lookaside makes
+// every miss a set. The worker adds demotion and promotion in the background.
+// The run prints slabs and items demoted and promoted under "Root Tier".
+{
+  "cache_config" : {
+    "cacheSizeMB" : 128,
+    "poolRebalanceIntervalSec" : 0,
+    "moveOnSlabRelease" : false,
+    "allocFactor" : 2,
+
+    "numPools" : 1,
+    "poolSizes" : [1.0],
+
+    "rootPrefixLen" : 2,
+    "rootCount" : 64,
+    "enableRootSlabTier" : true,
+    "rootHotnessHalfLifeSecs" : 30,
+    "rootSlabWorkerIntervalMs" : 200,
+    "rootMinFreeSlabsPerPool" : 1,
+    "rootMaxSlabsPerIteration" : 2,
+
+    "nvmCacheSizeMB" : 1024,
+    "nvmCacheMetadataSizeMB" : 8,
+    "navyRegionSizeMB" : 16
+  },
+  "test_config" : {
+    "numOps" : 1000000,
+    "numThreads" : 16,
+    "numKeys" : 100000,
+
+    "keySizeRange" : [8, 16],
+    "keySizeRangeProbability" : [1.0],
+
+    "valSizeRange" : [3000, 3200],
+    "valSizeRangeProbability" : [1.0],
+
+    "enableLookaside" : true,
+
+    "getRatio" : 0.8,
+    "setRatio" : 0.2,
+    "delRatio" : 0.0
+  }
+}

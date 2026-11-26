@@ -134,6 +134,10 @@ class NvmCacheTest : public testing::Test {
     return cache_ ? cache_->nvmCache_.get() : nullptr;
   }
 
+  void bumpRootHotness(uint64_t root, double weight) {
+    cache_->rootHotness_->recordAccess(root, util::getCurrentTimeSec(), weight);
+  }
+
   AccessTimeMap* getAccessTimeMap() {
     auto* nvm = getNvmCache();
     return nvm ? nvm->accessTimeMap_.get() : nullptr;

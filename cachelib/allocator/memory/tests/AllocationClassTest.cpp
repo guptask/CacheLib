@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include "cachelib/allocator/memory/AllocationClass.h"
@@ -179,6 +180,120 @@ TEST_F(AllocationClassTest, BadFree) {
   setSlabHeaderClassId(header, 6); // belongs to diff class.
   void* memory = slab->memoryAtOffset(folly::Random::rand32() % Slab::kSize);
   ASSERT_THROW(ac.free(memory), std::invalid_argument);
+}
+
+TEST_F(AllocationClassTest, RootsDoNotShareSlabs) {
+  auto slabAlloc = createSlabAllocator(100);
+  const PoolId pid = 0;
+  AllocationClass ac(0, pid, 1024, *slabAlloc);
+  for (int i = 0; i < 6; i++) {
+    ac.addSlab(slabAlloc->makeNewSlab(pid));
+  }
+
+  const uint64_t rootA = 0xA, rootB = 0xB;
+  const unsigned int nPerSlab = ac.getAllocsPerSlab();
+
+  // interleave two roots; each needs more than a slab so both grow.
+  std::vector<void*> allocsA, allocsB;
+  for (unsigned int i = 0; i < nPerSlab + 1; i++) {
+    allocsA.push_back(ac.allocate(rootA));
+    allocsB.push_back(ac.allocate(rootB));
+    ASSERT_NE(allocsA.back(), nullptr);
+    ASSERT_NE(allocsB.back(), nullptr);
+  }
+
+  auto slabsOf = [&](const std::vector<void*>& allocs, uint64_t root) {
+    std::set<const Slab*> slabs;
+    for (auto* a : allocs) {
+      EXPECT_EQ(root, slabAlloc->getSlabHeader(a)->getRootHash());
+      slabs.insert(slabAlloc->getSlabForMemory(a));
+    }
+    return slabs;
+  };
+  const auto slabsA = slabsOf(allocsA, rootA);
+  const auto slabsB = slabsOf(allocsB, rootB);
+  ASSERT_EQ(2u, slabsA.size());
+  ASSERT_EQ(2u, slabsB.size());
+  for (const auto* s : slabsA) {
+    ASSERT_EQ(0u, slabsB.count(s));
+  }
+
+  // a freed allocation is only reused by the root that owned it.
+  void* freed = allocsA.front();
+  ac.free(freed);
+  ASSERT_EQ(freed, ac.allocate(rootA));
+  ac.free(freed);
+  void* other = ac.allocate(rootB);
+  ASSERT_NE(freed, other);
+  ASSERT_EQ(rootB, slabAlloc->getSlabHeader(other)->getRootHash());
+
+  // allocations without a root never land in a slab owned by a root.
+  void* noRoot = ac.allocate();
+  ASSERT_NE(noRoot, nullptr);
+  ASSERT_EQ(kNoRootHash, slabAlloc->getSlabHeader(noRoot)->getRootHash());
+}
+
+TEST_F(AllocationClassTest, RootsRunOutOfSlabs) {
+  auto slabAlloc = createSlabAllocator(100);
+  const PoolId pid = 0;
+  AllocationClass ac(0, pid, 1024, *slabAlloc);
+  ac.addSlab(slabAlloc->makeNewSlab(pid));
+
+  const unsigned int nPerSlab = ac.getAllocsPerSlab();
+  for (unsigned int i = 0; i < nPerSlab; i++) {
+    ASSERT_NE(ac.allocate(1), nullptr);
+  }
+  // the only slab belongs to root 1.
+  ASSERT_EQ(ac.allocate(2), nullptr);
+  ASSERT_EQ(ac.allocate(1), nullptr);
+  ASSERT_EQ(ac.allocate(), nullptr);
+}
+
+TEST_F(AllocationClassTest, RootSlabSerializationAndRelease) {
+  auto slabAlloc = createSlabAllocator(100);
+  const PoolId pid = 0;
+  AllocationClass ac(0, pid, 1024, *slabAlloc);
+  ac.addSlab(slabAlloc->makeNewSlab(pid));
+  ac.addSlab(slabAlloc->makeNewSlab(pid));
+
+  const uint64_t rootA = 7, rootB = 9;
+  std::vector<void*> allocsA, allocsB;
+  for (int i = 0; i < 10; i++) {
+    allocsA.push_back(ac.allocate(rootA));
+    allocsB.push_back(ac.allocate(rootB));
+  }
+  ac.free(allocsA.back());
+  allocsA.pop_back();
+
+  uint8_t buffer[SerializationBufferSize];
+  uint8_t* begin = buffer;
+  uint8_t* end = buffer + SerializationBufferSize;
+  Serializer serializer(begin, end);
+  serializer.serialize(ac.saveState());
+
+  Deserializer deserializer(begin, end);
+  AllocationClass ac2(
+      deserializer.deserialize<serialization::AllocationClassObject>(),
+      pid,
+      *slabAlloc);
+
+  // each root keeps filling its own slab after the restore.
+  void* a = ac2.allocate(rootA);
+  void* b = ac2.allocate(rootB);
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  ASSERT_EQ(slabAlloc->getSlabForMemory(a),
+            slabAlloc->getSlabForMemory(allocsA.front()));
+  ASSERT_EQ(slabAlloc->getSlabForMemory(b),
+            slabAlloc->getSlabForMemory(allocsB.front()));
+
+  // releasing the slab of a root drops its ownership.
+  auto ctx = ac2.startSlabRelease(SlabReleaseMode::kResize, a);
+  for (auto* alloc : ctx.getActiveAllocations()) {
+    ac2.free(alloc);
+  }
+  ac2.completeSlabRelease(ctx);
+  ASSERT_EQ(nullptr, ac2.allocate(rootA));
 }
 
 TEST_F(AllocationClassTest, AddReleaseSlab) {

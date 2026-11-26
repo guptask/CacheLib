@@ -117,6 +117,7 @@ if (BUILD_TESTS)
   add_source_test (util/tests/MemoryMonitorScriptTest.cpp)
   add_source_test (util/tests/NandWritesTest.cpp)
   add_source_test (cache/tests/TimeStampTickerTest.cpp)
+  add_source_test (util/tests/CacheConfigRootTest.cpp)
 
   # Verify that cachebench can run a sample workload
   add_test (
@@ -127,4 +128,23 @@ if (BUILD_TESTS)
       ${CMAKE_CURRENT_SOURCE_DIR}/test_configs/simple_test.json
   )
   set_tests_properties(cachebench-simple PROPERTIES TIMEOUT 300)
+
+  # Root prefix slab placement, and the root slab tier on top of navy
+  add_test (
+    NAME cachebench-root-slab-placement
+    COMMAND
+      $<TARGET_FILE:cachebench>
+      --json_test_config
+      ${CMAKE_CURRENT_SOURCE_DIR}/test_configs/feature_stress/root_slab/placement.json
+  )
+  set_tests_properties(cachebench-root-slab-placement PROPERTIES TIMEOUT 600)
+
+  add_test (
+    NAME cachebench-root-slab-tier
+    COMMAND
+      $<TARGET_FILE:cachebench>
+      --json_test_config
+      ${CMAKE_CURRENT_SOURCE_DIR}/test_configs/feature_stress/root_slab/tier.json
+  )
+  set_tests_properties(cachebench-root-slab-tier PROPERTIES TIMEOUT 900)
 endif()

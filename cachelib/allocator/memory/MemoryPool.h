@@ -168,10 +168,12 @@ class MemoryPool {
 
   // allocates memory of at least _size_ bytes.
   //
-  // @param size  size of the allocation.
+  // @param size      size of the allocation.
+  // @param rootHash  root prefix hash; allocations of one non-zero root only
+  //                  share slabs with that root. See AllocationClass.
   // @return pointer to allocation or nullptr on failure to allocate.
   // @throw  std::invalid_argument if size is invalid.
-  void* allocate(uint32_t size);
+  void* allocate(uint32_t size, uint64_t rootHash = kNoRootHash);
 
   // Allocate a slab with zeroed memory
   //

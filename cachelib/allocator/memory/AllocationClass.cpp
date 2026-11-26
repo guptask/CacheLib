@@ -136,6 +136,26 @@ AllocationClass::AllocationClass(
     freeSlabs_.push_back(slabAlloc_.getSlabForIdx(freeSlabIdx));
   }
 
+  for (const auto& rootObject : *object.roots()) {
+    roots_.try_emplace(static_cast<uint64_t>(*rootObject.rootHash()),
+                       slabAlloc_, allocationSize_, rootObject);
+  }
+  for (auto* slab : allocatedSlabs_) {
+    const auto rootHash = slabAlloc_.getSlabHeader(slab)->getRootHash();
+    if (rootHash == kNoRootHash) {
+      continue;
+    }
+    auto it = roots_.find(rootHash);
+    if (it == roots_.end()) {
+      throw std::invalid_argument(fmt::format(
+          "Slab {} belongs to root {} with no state", fmt::ptr(slab), rootHash));
+    }
+    ++it->second.numSlabs;
+  }
+  for (auto& entry : roots_) {
+    refreshRootSpaceLocked(entry.second);
+  }
+
   checkState();
 
   // Poison slab regions that are not allocated. Tests depend on this running
@@ -160,6 +180,13 @@ AllocationClass::AllocationClass(
     slabAlloc_.asanPoisonMemoryRegion(currSlab_->memoryAtOffset(currOffset_),
                                       Slab::kSize - currOffset_);
   }
+  for (const auto& entry : roots_) {
+    const auto& st = entry.second;
+    if (st.currSlab != nullptr && st.currOffset < Slab::kSize) {
+      slabAlloc_.asanPoisonMemoryRegion(st.currSlab->memoryAtOffset(st.currOffset),
+                                        Slab::kSize - st.currOffset);
+    }
+  }
 }
 
 void AllocationClass::addSlabLocked(Slab* slab) {
@@ -174,11 +201,11 @@ void AllocationClass::addSlab(Slab* slab) {
   lock_->lock_combine([this, slab]() { addSlabLocked(slab); });
 }
 
-void* AllocationClass::addSlabAndAllocate(Slab* slab) {
+void* AllocationClass::addSlabAndAllocate(Slab* slab, uint64_t rootHash) {
   XDCHECK_NE(nullptr, slab);
-  return lock_->lock_combine([this, slab]() {
+  return lock_->lock_combine([this, slab, rootHash]() {
     addSlabLocked(slab);
-    return allocateLocked();
+    return allocateLocked(rootHash);
   });
 }
 
@@ -195,18 +222,23 @@ bool AllocationClass::canAllocateFromCurrentSlabLocked() const noexcept {
          ((currOffset_ + allocationSize_) <= Slab::kSize);
 }
 
-void* AllocationClass::allocate() {
+void* AllocationClass::allocate(uint64_t rootHash) {
   if (!canAllocate_) {
     return nullptr;
   }
-  return lock_->lock_combine([this]() -> void* { return allocateLocked(); });
+  return lock_->lock_combine(
+      [this, rootHash]() -> void* { return allocateLocked(rootHash); });
 }
 
-void* AllocationClass::allocateLocked() {
+void* AllocationClass::allocateLocked(uint64_t rootHash) {
+  if (rootHash != kNoRootHash) {
+    return allocateForRootLocked(rootHash);
+  }
+
   // fast path for case when the cache is mostly full.
   if (freedAllocations_.empty() && freeSlabs_.empty() &&
       !canAllocateFromCurrentSlabLocked()) {
-    canAllocate_ = false;
+    canAllocate_ = rootsWithSpace_ > 0;
     return nullptr;
   }
 
@@ -232,6 +264,103 @@ void* AllocationClass::allocateLocked() {
   setupCurrentSlabLocked();
   // grab a free slab and make it current.
   return allocateFromCurrentSlabLocked();
+}
+
+void* AllocationClass::allocateForRootLocked(uint64_t rootHash) {
+  auto it = roots_.find(rootHash);
+  if (it == roots_.end()) {
+    // a root without a slab can only start from a free slab.
+    if (freeSlabs_.empty()) {
+      refreshCanAllocateLocked();
+      return nullptr;
+    }
+    it = roots_.try_emplace(rootHash, slabAlloc_, allocationSize_).first;
+  }
+  auto& st = it->second;
+
+  void* ret = nullptr;
+  if (!st.freed.empty()) {
+    FreeAlloc* freed = st.freed.getHead();
+    XDCHECK(freed != nullptr);
+    st.freed.pop();
+    ret = reinterpret_cast<void*>(freed);
+  } else {
+    if (!canAllocateFromRootSlabLocked(st, allocationSize_)) {
+      if (freeSlabs_.empty()) {
+        refreshRootSpaceLocked(st);
+        refreshCanAllocateLocked();
+        return nullptr;
+      }
+      setupRootSlabLocked(rootHash, st);
+    }
+    ret = st.currSlab->memoryAtOffset(st.currOffset);
+    st.currOffset += allocationSize_;
+  }
+  slabAlloc_.asanUnpoisonMemoryRegion(ret, allocationSize_);
+
+  refreshRootSpaceLocked(st);
+  refreshCanAllocateLocked();
+  return ret;
+}
+
+void AllocationClass::refreshRootSpaceLocked(RootState& st) noexcept {
+  const bool hasSpace =
+      !st.freed.empty() || canAllocateFromRootSlabLocked(st, allocationSize_);
+  if (hasSpace != st.hasSpace) {
+    st.hasSpace = hasSpace;
+    if (hasSpace) {
+      ++rootsWithSpace_;
+    } else {
+      --rootsWithSpace_;
+    }
+  }
+}
+
+void AllocationClass::refreshCanAllocateLocked() noexcept {
+  canAllocate_ = !freeSlabs_.empty() || !freedAllocations_.empty() ||
+                 canAllocateFromCurrentSlabLocked() || rootsWithSpace_ > 0;
+}
+
+void AllocationClass::setupRootSlabLocked(uint64_t rootHash, RootState& st) {
+  XDCHECK(!freeSlabs_.empty());
+  auto slab = freeSlabs_.back();
+  freeSlabs_.pop_back();
+  slabAlloc_.getSlabHeader(slab)->setRootHash(rootHash);
+  st.currSlab = slab;
+  st.currOffset = 0;
+  ++st.numSlabs;
+  allocatedSlabs_.push_back(slab);
+}
+
+void AllocationClass::releaseRootSlabLocked(uint64_t rootHash) {
+  auto it = roots_.find(rootHash);
+  if (it == roots_.end()) {
+    return;
+  }
+  auto& st = it->second;
+  XDCHECK_GT(st.numSlabs, 0u);
+  if (--st.numSlabs > 0) {
+    return;
+  }
+  // the last slab is gone; its freed allocations were pruned with it.
+  XDCHECK(st.freed.empty());
+  XDCHECK(st.currSlab == nullptr);
+  if (st.hasSpace) {
+    --rootsWithSpace_;
+  }
+  roots_.erase(it);
+}
+
+AllocationClass::FreeList& AllocationClass::freeListLocked(uint64_t rootHash) {
+  if (rootHash == kNoRootHash) {
+    return freedAllocations_;
+  }
+  auto it = roots_.find(rootHash);
+  if (it == roots_.end()) {
+    throw std::runtime_error(fmt::format(
+        "Root {} has no state in allocation class {}", rootHash, classId_));
+  }
+  return it->second.freed;
 }
 
 void AllocationClass::setupCurrentSlabLocked() {
@@ -319,16 +448,24 @@ SlabReleaseContext AllocationClass::startSlabRelease(
 
     // if slab is being carved currently, then update slabReleaseAllocMap
     // allocState with free Allocs info, and then reset it
-    if (currSlab_ == slab) {
+    const auto rootHash = header->getRootHash();
+    RootState* rootSt =
+        rootHash == kNoRootHash ? nullptr : &roots_.at(rootHash);
+    Slab*& currSlab = rootSt ? rootSt->currSlab : currSlab_;
+    uint32_t& currOffset = rootSt ? rootSt->currOffset : currOffset_;
+    if (currSlab == slab) {
       auto& allocState = slabReleaseIt->second;
       XDCHECK_EQ(allocState.size(), getAllocsPerSlab());
-      for (size_t i = currOffset_ / allocationSize_; i < allocState.size();
+      for (size_t i = currOffset / allocationSize_; i < allocState.size();
            i++) {
         allocState[i] = true;
       }
 
-      currSlab_ = nullptr;
-      currOffset_ = 0;
+      currSlab = nullptr;
+      currOffset = 0;
+      if (rootSt) {
+        refreshRootSpaceLocked(*rootSt);
+      }
     }
   } // alloc lock scope
 
@@ -348,7 +485,11 @@ SlabReleaseContext AllocationClass::startSlabRelease(
   std::vector<void*> activeAllocations = std::move(results.second);
   return lock_->lock_combine([&]() {
     if (activeAllocations.empty()) {
+      const auto rootHash = header->getRootHash();
       header->clearClassAndUnmark();
+      if (rootHash != kNoRootHash) {
+        releaseRootSlabLocked(rootHash);
+      }
       // no active allocations to be freed back. We can consider this slab as
       // released from this AllocationClass. This means we also do not need
       // to keep the slabFreeState
@@ -406,16 +547,17 @@ std::pair<bool, std::vector<void*>> AllocationClass::pruneFreeAllocs(
   FreeList notInSlab{
       slabAlloc_.createPtrCompressor<FreeAlloc, CompressedPtr5B>()};
   FreeList inSlab{slabAlloc_.createPtrCompressor<FreeAlloc, CompressedPtr5B>()};
+  const auto rootHash = slabAlloc_.getSlabHeader(slab)->getRootHash();
 
   lock_->lock_combine([&]() {
     // Take the allocation class free list offline
     // This is because we need to process this free list in batches
     // in order not to stall threads that need to allocate memory
-    std::swap(freeAllocs, freedAllocations_);
+    std::swap(freeAllocs, freeListLocked(rootHash));
 
     // Check up to kFreeAllocsPruneLimit while holding the lock. This limits
     // the amount of time we hold the lock while also having a good chance
-    // of freedAllocations_ not being completely empty once we unlock.
+    // of the free list not being completely empty once we unlock.
     partitionFreeAllocs(slab, freeAllocs, inSlab, notInSlab);
   });
 
@@ -428,8 +570,11 @@ std::pair<bool, std::vector<void*>> AllocationClass::pruneFreeAllocs(
     lock_->lock_combine([&]() {
       // Put back allocs we checked while not holding the lock.
       if (!notInSlab.empty()) {
-        freedAllocations_.splice(std::move(notInSlab));
+        freeListLocked(rootHash).splice(std::move(notInSlab));
         canAllocate_ = true;
+        if (rootHash != kNoRootHash) {
+          refreshRootSpaceLocked(roots_.at(rootHash));
+        }
       }
 
       auto& allocState = getSlabReleaseAllocMapLocked(slab);
@@ -475,7 +620,10 @@ std::pair<bool, std::vector<void*>> AllocationClass::pruneFreeAllocs(
       if (!inSlab.empty()) {
         freeAllocs.splice(std::move(inSlab));
       }
-      freedAllocations_.splice(std::move(freeAllocs));
+      freeListLocked(rootHash).splice(std::move(freeAllocs));
+      if (rootHash != kNoRootHash) {
+        refreshRootSpaceLocked(roots_.at(rootHash));
+      }
     });
     return {shouldAbort, activeAllocations};
   }
@@ -538,16 +686,21 @@ void AllocationClass::restoreFreedAllocsLocked(const Slab* slab) {
   // an abort. getSlabReleaseAllocMapLocked throws if it is missing, surfacing a
   // corrupt release state rather than silently leaking the slab's freed allocs.
   const auto& allocState = getSlabReleaseAllocMapLocked(slab);
+  const auto rootHash = slabAlloc_.getSlabHeader(slab)->getRootHash();
+  auto& freeList = freeListLocked(rootHash);
   bool inserted = false;
   for (size_t idx = 0; idx < allocState.size(); idx++) {
     if (allocState[idx]) {
       auto alloc = getAllocForIdx(slab, idx);
-      freedAllocations_.insert(*reinterpret_cast<FreeAlloc*>(alloc));
+      freeList.insert(*reinterpret_cast<FreeAlloc*>(alloc));
       inserted = true;
     }
   }
   if (inserted) {
     canAllocate_ = true;
+    if (rootHash != kNoRootHash) {
+      refreshRootSpaceLocked(roots_.at(rootHash));
+    }
   }
 }
 
@@ -599,7 +752,11 @@ void AllocationClass::completeSlabRelease(const SlabReleaseContext& context) {
   lock_->lock_combine([&]() {
     slabReleaseAllocMap_.erase(slabPtrVal);
 
+    const auto rootHash = header->getRootHash();
     header->clearClassAndUnmark();
+    if (rootHash != kNoRootHash) {
+      releaseRootSlabLocked(rootHash);
+    }
     --activeReleases_;
     XDCHECK_GE(activeReleases_.load(), 0);
   });
@@ -709,7 +866,14 @@ void AllocationClass::free(void* memory) {
     }
 
     // TODO add checks here to ensure that we dont double free in debug mode.
-    freedAllocations_.insert(*reinterpret_cast<FreeAlloc*>(memory));
+    const auto rootHash = header->getRootHash();
+    if (rootHash == kNoRootHash) {
+      freedAllocations_.insert(*reinterpret_cast<FreeAlloc*>(memory));
+    } else {
+      auto& st = roots_.at(rootHash);
+      st.freed.insert(*reinterpret_cast<FreeAlloc*>(memory));
+      refreshRootSpaceLocked(st);
+    }
     canAllocate_ = true;
   });
 }
@@ -736,18 +900,45 @@ serialization::AllocationClassObject AllocationClass::saveState() const {
   }
   *object.freedAllocationsObject() = freedAllocations_.saveState();
   *object.canAllocate() = canAllocate_;
+  for (const auto& [rootHash, st] : roots_) {
+    serialization::AllocationClassRootObject rootObject;
+    *rootObject.rootHash() = static_cast<int64_t>(rootHash);
+    *rootObject.currSlabIdx() = slabAlloc_.slabIdx(st.currSlab);
+    *rootObject.currOffset() = st.currOffset;
+    *rootObject.freedAllocationsObject() = st.freed.saveState();
+    object.roots()->push_back(std::move(rootObject));
+  }
   return object;
+}
+
+std::vector<std::pair<uint64_t, Slab*>> AllocationClass::getRootSlabs() const {
+  return lock_->lock_combine([this]() {
+    std::vector<std::pair<uint64_t, Slab*>> slabs;
+    for (auto* slab : allocatedSlabs_) {
+      const auto rootHash = slabAlloc_.getSlabHeader(slab)->getRootHash();
+      if (rootHash != kNoRootHash) {
+        slabs.emplace_back(rootHash, slab);
+      }
+    }
+    return slabs;
+  });
 }
 
 ACStats AllocationClass::getStats() const {
   return lock_->lock_combine([this]() -> ACStats {
-    const auto freeAllocsInCurrSlab =
+    unsigned long long freeAllocsInCurrSlab =
         canAllocateFromCurrentSlabLocked()
             ? (Slab::kSize - currOffset_) / allocationSize_
             : 0;
+    unsigned long long nFreedAllocs = freedAllocations_.size();
+    for (const auto& [rootHash, st] : roots_) {
+      nFreedAllocs += st.freed.size();
+      if (canAllocateFromRootSlabLocked(st, allocationSize_)) {
+        freeAllocsInCurrSlab += (Slab::kSize - st.currOffset) / allocationSize_;
+      }
+    }
     const unsigned long long perSlab = getAllocsPerSlab();
     const unsigned long long nSlabsAllocated = allocatedSlabs_.size();
-    const unsigned long long nFreedAllocs = freedAllocations_.size();
     const unsigned long long nActiveAllocs =
         nSlabsAllocated * perSlab - nFreedAllocs - freeAllocsInCurrSlab;
     return {allocationSize_, perSlab,       nSlabsAllocated, freeSlabs_.size(),

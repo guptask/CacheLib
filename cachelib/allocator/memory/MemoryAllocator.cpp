@@ -103,9 +103,9 @@ MemoryAllocator::MemoryAllocator(
   checkConfig(config_);
 }
 
-void* MemoryAllocator::allocate(PoolId id, uint32_t size) {
+void* MemoryAllocator::allocate(PoolId id, uint32_t size, uint64_t rootHash) {
   auto& mp = memoryPoolManager_.getPoolById(id);
-  return mp.allocate(size);
+  return mp.allocate(size, rootHash);
 }
 
 void* MemoryAllocator::allocateZeroedSlab(PoolId id) {

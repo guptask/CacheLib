@@ -67,6 +67,9 @@
 #include "cachelib/allocator/Reaper.h"
 #include "cachelib/allocator/RebalanceStrategy.h"
 #include "cachelib/allocator/Refcount.h"
+#include "cachelib/allocator/RootHotness.h"
+#include "cachelib/allocator/RootSlabImage.h"
+#include "cachelib/allocator/RootSlabMover.h"
 #include "cachelib/allocator/TempShmMapping.h"
 #include "cachelib/allocator/TlsActiveItemRing.h"
 #include "cachelib/allocator/TypedHandle.h"
@@ -467,6 +470,60 @@ class CacheAllocator : public CacheBase {
                        uint32_t size,
                        uint32_t ttlSecs = 0,
                        uint32_t creationTime = 0);
+
+  // Same as allocate(), but places the item in a slab owned by `rootHash`.
+  // Every slab holds items of a single root prefix hash. A root can own any
+  // number of slabs. Memory a root needs is taken from free slabs, from its
+  // own slabs and, once the pool is full, by evicting items of the same root
+  // only. The allocation fails when the root has nothing it can evict. Chained
+  // items are placed with their parent.
+  //
+  // @param rootHash  hash of the root prefix of `key`. kNoRootHash (0) is
+  //                  the same as calling allocate().
+  //
+  // Items without a root only use slabs that no root owns once any rooted
+  // allocation was made.
+  WriteHandle allocateWithRoot(PoolId id,
+                               uint64_t rootHash,
+                               Key key,
+                               uint32_t size,
+                               uint32_t ttlSecs = 0,
+                               uint32_t creationTime = 0);
+
+  // find() for a key of root `rootHash`. The access counts toward the hotness
+  // of the root. On a DRAM miss, the slabs of the root that were evicted to
+  // navy are promoted first. Same as find() unless the root slab tier is
+  // enabled.
+  ReadHandle findWithRoot(Key key, uint64_t rootHash);
+
+  // findToWrite() for a key of root `rootHash`, see findWithRoot().
+  WriteHandle findToWriteWithRoot(Key key, uint64_t rootHash);
+
+  // Evicts one slab of the coldest root of the allocation class to navy, as a
+  // single object, and returns the slab to the pool.
+  //
+  // @param excludeRoot  never demoted. If set, only a root colder than it is.
+  // @return true if a slab was released
+  bool demoteColdestRootSlab(PoolId pid,
+                             ClassId cid,
+                             uint64_t excludeRoot = kNoRootHash);
+
+  // Brings the slabs of `rootHash` that sit in navy back into DRAM, into slabs
+  // of the root.
+  //
+  // @param maxSlabs  stop after this many slabs
+  // @return number of items promoted
+  size_t promoteRoot(uint64_t rootHash, size_t maxSlabs = SIZE_MAX);
+
+  RootSlabTierStats getRootSlabTierStats() const;
+
+  // decayed access count of the root.
+  double getRootHotness(uint64_t rootHash) const;
+
+  // @return the root of the slab that holds the item, kNoRootHash if none.
+  uint64_t getItemRootHash(const Item& item) const {
+    return allocator_->getRootHash(item.getMemory());
+  }
 
   // Allocate a chained item
   //
@@ -1717,6 +1774,7 @@ class CacheAllocator : public CacheBase {
   // @param expiryTime      set an expiry timestamp for the item (0 means no
   //                        expiration time).
   // @param fromBgThread    whether this is called from BG thread
+  // @param rootHash        root prefix hash that owns the slab of the item
   //
   // @return      the handle for the item or an invalid handle(nullptr) if the
   //              allocation failed. Allocation can fail if one such
@@ -1731,7 +1789,8 @@ class CacheAllocator : public CacheBase {
                                uint32_t size,
                                uint32_t creationTime,
                                uint32_t expiryTime,
-                               bool fromBgThread = false);
+                               bool fromBgThread = false,
+                               uint64_t rootHash = kNoRootHash);
 
   // Allocate a chained item
   //
@@ -2065,9 +2124,11 @@ class CacheAllocator : public CacheBase {
   //
   // @param  pid  the id of the pool to look for evictions inside
   // @param  cid  the id of the class to look for evictions inside
+  // @param  rootHash  only items in slabs owned by this root are candidates
+  //                   once rooted allocations are in use
   // @return An evicted item or nullptr  if there is no suitable candidate found
   // within the configured number of attempts.
-  Item* findEviction(PoolId pid, ClassId cid);
+  Item* findEviction(PoolId pid, ClassId cid, uint64_t rootHash = kNoRootHash);
 
   // Get next eviction candidate from MMContainer, remove from AccessContainer,
   // MMContainer and insert into NVMCache if enabled.
@@ -2075,13 +2136,15 @@ class CacheAllocator : public CacheBase {
   // @param pid  the id of the pool to look for evictions inside
   // @param cid  the id of the class to look for evictions inside
   // @param searchTries number of search attempts so far.
+  // @param rootHash  see findEviction
   //
   // @return pair of [candidate, toRecycle]. Pair of null if reached the end of
   // the eviction queue or no suitable candidate found
   // within the configured number of attempts
   std::pair<Item*, Item*> getNextCandidate(PoolId pid,
                                            ClassId cid,
-                                           unsigned int& searchTries);
+                                           unsigned int& searchTries,
+                                           uint64_t rootHash = kNoRootHash);
 
   using EvictionIterator = typename MMContainer::LockedIterator;
 
@@ -2298,8 +2361,16 @@ class CacheAllocator : public CacheBase {
                    const void* hint = nullptr) final;
 
  private:
+  // Items evicted from one slab, on their way to a navy slab image.
+  struct SlabImageBuilder {
+    SlabImageWriter writer;
+  };
+
   // @param releaseContext  slab release context
-  void releaseSlabImpl(const SlabReleaseContext& releaseContext);
+  // @param image           if set, evicted items go into this slab image
+  //                        instead of being moved or put to navy one by one
+  void releaseSlabImpl(const SlabReleaseContext& releaseContext,
+                       SlabImageBuilder* image = nullptr);
 
   // @return  true when successfully marked as moving,
   //          fasle when this item has already been freed
@@ -2318,7 +2389,37 @@ class CacheAllocator : public CacheBase {
   // ensure it is safe for freeing.
   //
   // @param item        old item to be moved elsewhere
-  void evictForSlabRelease(Item& item);
+  // @param image       see releaseSlabImpl
+  void evictForSlabRelease(Item& item, SlabImageBuilder* image = nullptr);
+
+  // Adds the item and its chained items to the image, and marks it as having
+  // a copy in navy so that its destructor is left to the image.
+  // @return false if the item can not be part of an image
+  bool addToSlabImage(Item& evicted, SlabImageBuilder& image);
+
+  // Writes the image to navy and indexes it. If navy refuses it, the items
+  // are dropped and their destructors run.
+  void finishSlabImage(uint64_t rootHash, PoolId pid, SlabImageBuilder& image);
+
+  // releaseSlab() that can collect the items into a slab image.
+  void releaseSlabInternal(PoolId pid,
+                           ClassId victim,
+                           ClassId receiver,
+                           SlabReleaseMode mode,
+                           const void* hint,
+                           SlabImageBuilder* image);
+
+  bool rootSlabTierActive() const noexcept {
+    return rootHotness_ != nullptr && nvmCache_ != nullptr &&
+           nvmCache_->isEnabled();
+  }
+
+  // Background work of the root slab tier: keeps free slabs in each pool by
+  // demoting cold roots, and promotes hot roots that sit in navy.
+  void moveRootSlabs();
+
+  // Coldest root with a slab in the pool and the class of one of its slabs.
+  bool coldestRootOfPool(PoolId pid, uint64_t& root, ClassId& cid) const;
 
   // Helper function to create PutToken
   //
@@ -2854,6 +2955,22 @@ class CacheAllocator : public CacheBase {
   // (destructive, non-idempotent) teardown. This is never reset.
   std::atomic<bool> shutDownStarted_{false};
 
+  // set by the first rooted allocation. From then on eviction only recycles
+  // memory from slabs owned by the root of the allocation.
+  std::atomic<bool> rootedAllocsUsed_{false};
+
+  // Root slab tier. rootHotness_ is only set when the tier is configured.
+  std::unique_ptr<RootHotness> rootHotness_;
+  RootNvmIndex rootNvmIndex_;
+  std::unique_ptr<RootSlabMover> rootSlabMover_;
+  std::atomic<uint64_t> rootSlabsDemoted_{0};
+  std::atomic<uint64_t> rootItemsDemoted_{0};
+  std::atomic<uint64_t> rootSlabsPromoted_{0};
+  std::atomic<uint64_t> rootItemsPromoted_{0};
+  std::atomic<uint64_t> rootImageWriteFailures_{0};
+  std::atomic<uint64_t> rootImagesDropped_{0};
+  std::atomic<uint64_t> rootItemsLostOnPromote_{0};
+
   // END private members
 
   // Make this friend to give access to acquire and release
@@ -3166,10 +3283,27 @@ void CacheAllocator<CacheTrait>::initNvmCache(bool dramCacheAttached) {
   if (!config_.cacheDir.empty()) {
     nvmCacheState_.clearPrevState();
   }
+
+  if (config_.rootSlabTier.enabled) {
+    rootHotness_ = std::make_unique<RootHotness>(
+        config_.rootSlabTier.hotnessHalfLifeSecs);
+    nvmCache_->setSlabImageDropCb([this](const std::string& imageKey) {
+      if (rootNvmIndex_.drop(imageKey)) {
+        rootImagesDropped_.fetch_add(1, std::memory_order_relaxed);
+      }
+    });
+  }
 }
 
 template <typename CacheTrait>
 void CacheAllocator<CacheTrait>::initWorkers() {
+  if (rootHotness_ && config_.rootSlabTier.workerInterval.count() > 0 &&
+      !rootSlabMover_) {
+    startNewWorker("RootSlabMover", rootSlabMover_,
+                   config_.rootSlabTier.workerInterval,
+                   std::function<void()>([this]() { moveRootSlabs(); }));
+  }
+
   if (config_.poolResizingEnabled() && !poolResizer_) {
     startNewPoolResizer(config_.poolResizeInterval,
                         config_.poolResizeSlabsPerIter,
@@ -3298,12 +3432,36 @@ CacheAllocator<CacheTrait>::allocate(PoolId poolId,
 
 template <typename CacheTrait>
 typename CacheAllocator<CacheTrait>::WriteHandle
+CacheAllocator<CacheTrait>::allocateWithRoot(PoolId poolId,
+                                             uint64_t rootHash,
+                                             typename Item::Key key,
+                                             uint32_t size,
+                                             uint32_t ttlSecs,
+                                             uint32_t creationTime) {
+  if (rootHash != kNoRootHash &&
+      !rootedAllocsUsed_.load(std::memory_order_relaxed)) {
+    rootedAllocsUsed_.store(true, std::memory_order_relaxed);
+  }
+  if (rootHash != kNoRootHash && rootHotness_) {
+    rootHotness_->recordAccess(rootHash, util::getCurrentTimeSec());
+  }
+  if (creationTime == 0) {
+    creationTime = util::getCurrentTimeSec();
+  }
+  return allocateInternal(poolId, key, size, creationTime,
+                          ttlSecs == 0 ? 0 : creationTime + ttlSecs,
+                          /* fromBgThread */ false, rootHash);
+}
+
+template <typename CacheTrait>
+typename CacheAllocator<CacheTrait>::WriteHandle
 CacheAllocator<CacheTrait>::allocateInternal(PoolId pid,
                                              typename Item::Key key,
                                              uint32_t size,
                                              uint32_t creationTime,
                                              uint32_t expiryTime,
-                                             bool fromBgThread) {
+                                             bool fromBgThread,
+                                             uint64_t rootHash) {
   util::LatencyTracker tracker{stats().allocateLatency_};
 
   SCOPE_FAIL { stats_.invalidAllocs.inc(); };
@@ -3316,7 +3474,7 @@ CacheAllocator<CacheTrait>::allocateInternal(PoolId pid,
 
   (*stats_.allocAttempts)[pid][cid].inc();
 
-  void* memory = allocator_->allocate(pid, requiredSize);
+  void* memory = allocator_->allocate(pid, requiredSize, rootHash);
 
   if (backgroundEvictor_.size() && !fromBgThread && memory == nullptr) {
     backgroundEvictor_[BackgroundMover<CacheT>::workerId(
@@ -3324,8 +3482,15 @@ CacheAllocator<CacheTrait>::allocateInternal(PoolId pid,
         ->wakeUp();
   }
 
+  if (memory == nullptr && rootHash != kNoRootHash) {
+    // a colder root gives up a slab instead of this root evicting its own items
+    if (demoteColdestRootSlab(pid, cid, rootHash)) {
+      memory = allocator_->allocate(pid, requiredSize, rootHash);
+    }
+  }
+
   if (memory == nullptr) {
-    memory = findEviction(pid, cid);
+    memory = findEviction(pid, cid, rootHash);
   }
 
   WriteHandle handle;
@@ -3412,12 +3577,18 @@ CacheAllocator<CacheTrait>::allocateChainedItemInternal(const Item& parent,
 
   const auto pid = allocator_->getAllocInfo(parent.getMemory()).poolId;
   const auto cid = allocator_->getAllocationClassId(pid, requiredSize);
+  // chained items stay in the slabs of the root of their parent
+  const auto rootHash = allocator_->getRootHash(parent.getMemory());
 
   (*stats_.allocAttempts)[pid][cid].inc();
 
-  void* memory = allocator_->allocate(pid, requiredSize);
+  void* memory = allocator_->allocate(pid, requiredSize, rootHash);
+  if (memory == nullptr && rootHash != kNoRootHash &&
+      demoteColdestRootSlab(pid, cid, rootHash)) {
+    memory = allocator_->allocate(pid, requiredSize, rootHash);
+  }
   if (memory == nullptr) {
-    memory = findEviction(pid, cid);
+    memory = findEviction(pid, cid, rootHash);
   }
   if (memory == nullptr) {
     (*stats_.allocFailures)[pid][cid].inc();
@@ -4314,10 +4485,12 @@ std::pair<typename CacheAllocator<CacheTrait>::Item*,
           typename CacheAllocator<CacheTrait>::Item*>
 CacheAllocator<CacheTrait>::getNextCandidate(PoolId pid,
                                              ClassId cid,
-                                             unsigned int& searchTries) {
+                                             unsigned int& searchTries,
+                                             uint64_t rootHash) {
   typename NvmCacheT::PutToken token;
   Item* toRecycle = nullptr;
   Item* candidate = nullptr;
+  const bool rootFilter = rootedAllocsUsed_.load(std::memory_order_relaxed);
   unsigned int searchLimit = config_.evictionSearchTries;
   std::atomic<uint32_t>* tailTime = nullptr;
   uint32_t shard = 0;
@@ -4334,7 +4507,8 @@ CacheAllocator<CacheTrait>::getNextCandidate(PoolId pid,
 
   mmContainer.withEvictionIterator([this, pid, cid, &candidate, &toRecycle,
                                     &searchTries, &mmContainer, &token,
-                                    searchLimit, tailTime](auto&& itr) {
+                                    searchLimit, tailTime, rootFilter,
+                                    rootHash](auto&& itr) {
     if (!itr) {
       ++searchTries;
       (*stats_.evictionAttempts)[pid][cid].inc();
@@ -4349,6 +4523,11 @@ CacheAllocator<CacheTrait>::getNextCandidate(PoolId pid,
       (*stats_.evictionAttempts)[pid][cid].inc();
 
       auto* toRecycle_ = itr.get();
+      // the recycled memory must stay in a slab of the requesting root.
+      if (rootFilter && allocator_->getRootHash(toRecycle_) != rootHash) {
+        ++itr;
+        continue;
+      }
       auto* candidate_ =
           toRecycle_->isChainedItem()
               ? &toRecycle_->asChainedItem().getParentItem(compressor_)
@@ -4476,17 +4655,29 @@ CacheAllocator<CacheTrait>::getNextCandidate(PoolId pid,
 
 template <typename CacheTrait>
 typename CacheAllocator<CacheTrait>::Item*
-CacheAllocator<CacheTrait>::findEviction(PoolId pid, ClassId cid) {
+CacheAllocator<CacheTrait>::findEviction(PoolId pid,
+                                         ClassId cid,
+                                         uint64_t rootHash) {
   // Keep searching for a candidate until we were able to evict it
   // or until the search limit has been exhausted
   unsigned int searchTries = 0;
+  // With a root filter an unlimited search ends once a few full passes over
+  // the eviction queue found nothing of the root.
+  const bool rootFilter = rootedAllocsUsed_.load(std::memory_order_relaxed);
+  constexpr unsigned int kMaxEmptyRootPasses = 3;
+  unsigned int emptyPasses = 0;
   while (config_.evictionSearchTries == 0 ||
          config_.evictionSearchTries > searchTries) {
-    auto [candidate, toRecycle] = getNextCandidate(pid, cid, searchTries);
+    auto [candidate, toRecycle] =
+        getNextCandidate(pid, cid, searchTries, rootHash);
 
     // Reached the end of the eviction queue but couldn't find a candidate,
     // start again.
     if (!toRecycle) {
+      if (rootFilter && config_.evictionSearchTries == 0 &&
+          ++emptyPasses >= kMaxEmptyRootPasses) {
+        return nullptr;
+      }
       continue;
     }
     // recycle the item. it's safe to do so, even if toReleaseHandle was
@@ -5750,6 +5941,16 @@ void CacheAllocator<CacheTrait>::releaseSlab(PoolId pid,
                                              ClassId receiver,
                                              SlabReleaseMode mode,
                                              const void* hint) {
+  releaseSlabInternal(pid, victim, receiver, mode, hint, nullptr);
+}
+
+template <typename CacheTrait>
+void CacheAllocator<CacheTrait>::releaseSlabInternal(PoolId pid,
+                                                     ClassId victim,
+                                                     ClassId receiver,
+                                                     SlabReleaseMode mode,
+                                                     const void* hint,
+                                                     SlabImageBuilder* image) {
   stats_.numActiveSlabReleases.inc();
   SCOPE_EXIT { stats_.numActiveSlabReleases.dec(); };
 
@@ -5780,7 +5981,7 @@ void CacheAllocator<CacheTrait>::releaseSlab(PoolId pid,
       return;
     }
 
-    releaseSlabImpl(releaseContext);
+    releaseSlabImpl(releaseContext, image);
     if (!allocator_->allAllocsFreed(releaseContext)) {
       throw std::runtime_error(
           fmt::format("Was not able to free all allocs. PoolId: {}, AC: {}",
@@ -5821,7 +6022,7 @@ SlabReleaseStats CacheAllocator<CacheTrait>::getSlabReleaseStats()
 
 template <typename CacheTrait>
 void CacheAllocator<CacheTrait>::releaseSlabImpl(
-    const SlabReleaseContext& releaseContext) {
+    const SlabReleaseContext& releaseContext, SlabImageBuilder* image) {
   auto startTime = std::chrono::milliseconds(util::getCurrentTimeMs());
   bool releaseStuck = false;
 
@@ -5858,10 +6059,11 @@ void CacheAllocator<CacheTrait>::releaseSlabImpl(
       continue;
     }
 
-    // Try to move this item and make sure we can free the memory
-    if (!moveForSlabRelease(item)) {
+    // Try to move this item and make sure we can free the memory. A slab that
+    // goes to navy as an image is evicted as a whole instead.
+    if (image != nullptr || !moveForSlabRelease(item)) {
       // If moving fails, evict it
-      evictForSlabRelease(item);
+      evictForSlabRelease(item, image);
     }
     XDCHECK(allocator_->isAllocFreed(releaseContext, alloc));
   }
@@ -5995,7 +6197,8 @@ CacheAllocator<CacheTrait>::allocateNewItemForOldItem(const Item& oldItem) {
                                      oldItem.getSize(),
                                      oldItem.getCreationTime(),
                                      oldItem.getExpiryTime(),
-                                     false);
+                                     false,
+                                     allocator_->getRootHash(&oldItem));
   if (!newItemHdl) {
     return {};
   }
@@ -6012,7 +6215,8 @@ CacheAllocator<CacheTrait>::allocateNewItemForOldItem(const Item& oldItem) {
 }
 
 template <typename CacheTrait>
-void CacheAllocator<CacheTrait>::evictForSlabRelease(Item& item) {
+void CacheAllocator<CacheTrait>::evictForSlabRelease(Item& item,
+                                                     SlabImageBuilder* image) {
   stats_.numEvictionAttempts.inc();
 
   typename NvmCacheT::PutToken token;
@@ -6031,7 +6235,9 @@ void CacheAllocator<CacheTrait>::evictForSlabRelease(Item& item) {
   // no other reader can be added to the waiters list
   wakeUpWaiters(evicted->getKey(), {});
 
-  if (token.isValid() && shouldWriteToNvmCacheExclusive(*evicted)) {
+  if (image != nullptr && addToSlabImage(*evicted, *image)) {
+    // the image owns the item now
+  } else if (token.isValid() && shouldWriteToNvmCacheExclusive(*evicted)) {
     nvmCache_->put(*evicted, std::move(token));
   } else if (shouldUpdateAccessTimeMap(*evicted)) {
     HashedKey hk{evicted->getKey()};
@@ -6052,6 +6258,273 @@ void CacheAllocator<CacheTrait>::evictForSlabRelease(Item& item) {
   const auto res =
       releaseBackToAllocator(*evicted, RemoveContext::kEviction, false);
   XDCHECK(res == ReleaseRes::kReleased);
+}
+
+template <typename CacheTrait>
+bool CacheAllocator<CacheTrait>::addToSlabImage(Item& evicted,
+                                                SlabImageBuilder& image) {
+  if (!nvmCache_ || evicted.isExpired()) {
+    return false;
+  }
+  std::string payload;
+  if (!nvmCache_->encodeForSlabImage(evicted, payload)) {
+    return false;
+  }
+  const auto key = evicted.getKey();
+  image.writer.add({key.data(), key.size()}, payload);
+  // the destructor runs when the image goes away
+  evicted.markNvmClean();
+  evicted.unmarkNvmEvicted();
+  return true;
+}
+
+template <typename CacheTrait>
+void CacheAllocator<CacheTrait>::finishSlabImage(uint64_t rootHash,
+                                                 PoolId pid,
+                                                 SlabImageBuilder& image) {
+  const auto numItems = image.writer.numRecords();
+  if (numItems == 0) {
+    return;
+  }
+  const auto& data = image.writer.data();
+  auto key = rootNvmIndex_.makeKey(rootHash);
+  if (!nvmCache_->putSlabImage(key, data, pid)) {
+    rootImageWriteFailures_.fetch_add(1, std::memory_order_relaxed);
+    nvmCache_->destroySlabImage(data, DestructorContext::kEvictedFromNVM);
+    return;
+  }
+  rootNvmIndex_.add(rootHash,
+                    RootNvmIndex::Image{std::move(key),
+                                        static_cast<uint32_t>(numItems),
+                                        data.size(), static_cast<int8_t>(pid)});
+  rootItemsDemoted_.fetch_add(numItems, std::memory_order_relaxed);
+}
+
+template <typename CacheTrait>
+bool CacheAllocator<CacheTrait>::demoteColdestRootSlab(PoolId pid,
+                                                       ClassId cid,
+                                                       uint64_t excludeRoot) {
+  if (!rootSlabTierActive()) {
+    return false;
+  }
+
+  const auto rootSlabs =
+      allocator_->getPool(pid).getAllocationClass(cid).getRootSlabs();
+  std::vector<uint64_t> roots;
+  roots.reserve(rootSlabs.size());
+  for (const auto& rootSlab : rootSlabs) {
+    roots.push_back(rootSlab.first);
+  }
+
+  const auto now = util::getCurrentTimeSec();
+  uint64_t victim = kNoRootHash;
+  if (!rootHotness_->coldest(roots, excludeRoot, now, victim)) {
+    return false;
+  }
+  // a root only gives way to a hotter one
+  if (excludeRoot != kNoRootHash &&
+      !rootHotness_->colder(victim, excludeRoot, now)) {
+    return false;
+  }
+
+  const Slab* slab = nullptr;
+  for (const auto& rootSlab : rootSlabs) {
+    if (rootSlab.first == victim) {
+      slab = rootSlab.second;
+      break;
+    }
+  }
+  if (slab == nullptr) {
+    return false;
+  }
+
+  SlabImageBuilder image;
+  bool released = false;
+  try {
+    // rebalance without a receiver returns the slab to the pool
+    releaseSlabInternal(pid, cid, Slab::kInvalidClassId,
+                        SlabReleaseMode::kRebalance, slab->memoryAtOffset(0),
+                        &image);
+    released = true;
+  } catch (const std::exception& ex) {
+    XLOGF(DBG, "Could not demote a slab of root {}: {}", victim, ex.what());
+  }
+  // items evicted before a failure are in the image and must not be lost
+  finishSlabImage(victim, pid, image);
+  if (released) {
+    rootSlabsDemoted_.fetch_add(1, std::memory_order_relaxed);
+  }
+  return released;
+}
+
+template <typename CacheTrait>
+size_t CacheAllocator<CacheTrait>::promoteRoot(uint64_t rootHash,
+                                               size_t maxSlabs) {
+  if (rootHash == kNoRootHash || !rootSlabTierActive()) {
+    return 0;
+  }
+
+  // the destructor of a record that does not make it back to DRAM
+  auto dropRecord = [this](std::string_view key, std::string_view payload) {
+    SlabImageWriter single;
+    single.add(key, payload);
+    nvmCache_->destroySlabImage(single.data(),
+                                DestructorContext::kEvictedFromNVM);
+    rootItemsLostOnPromote_.fetch_add(1, std::memory_order_relaxed);
+  };
+
+  size_t promoted = 0;
+  for (const auto& image : rootNvmIndex_.take(rootHash, maxSlabs)) {
+    std::string data;
+    // navy may have evicted it, its drop callback has cleaned up already
+    if (!nvmCache_->getSlabImage(image.key, data)) {
+      continue;
+    }
+    nvmCache_->removeSlabImage(image.key);
+
+    SlabImageReader reader(data);
+    std::string_view key;
+    std::string_view payload;
+    while (reader.next(key, payload)) {
+      auto handle = nvmCache_->createItemFromSlabImage(
+          {key.data(), key.size()}, {payload.data(), payload.size()}, rootHash);
+      if (!handle) {
+        dropRecord(key, payload);
+        continue;
+      }
+      // a copy that was inserted meanwhile is newer and wins
+      if (insertImpl(handle, AllocatorApiEvent::INSERT_FROM_NVM)) {
+        ++promoted;
+      }
+    }
+    rootSlabsPromoted_.fetch_add(1, std::memory_order_relaxed);
+  }
+  rootItemsPromoted_.fetch_add(promoted, std::memory_order_relaxed);
+  return promoted;
+}
+
+template <typename CacheTrait>
+typename CacheAllocator<CacheTrait>::ReadHandle
+CacheAllocator<CacheTrait>::findWithRoot(typename Item::Key key,
+                                         uint64_t rootHash) {
+  auto handle = find(key);
+  if (rootHash == kNoRootHash || !rootSlabTierActive()) {
+    return handle;
+  }
+  rootHotness_->recordAccess(rootHash, util::getCurrentTimeSec());
+  if (!handle && rootNvmIndex_.contains(rootHash) &&
+      promoteRoot(rootHash) > 0) {
+    handle = find(key);
+  }
+  return handle;
+}
+
+template <typename CacheTrait>
+typename CacheAllocator<CacheTrait>::WriteHandle
+CacheAllocator<CacheTrait>::findToWriteWithRoot(typename Item::Key key,
+                                                uint64_t rootHash) {
+  auto handle = findToWrite(key);
+  if (rootHash == kNoRootHash || !rootSlabTierActive()) {
+    return handle;
+  }
+  rootHotness_->recordAccess(rootHash, util::getCurrentTimeSec());
+  if (!handle && rootNvmIndex_.contains(rootHash) &&
+      promoteRoot(rootHash) > 0) {
+    handle = findToWrite(key);
+  }
+  return handle;
+}
+
+template <typename CacheTrait>
+RootSlabTierStats CacheAllocator<CacheTrait>::getRootSlabTierStats() const {
+  RootSlabTierStats stats;
+  stats.slabsDemoted = rootSlabsDemoted_.load(std::memory_order_relaxed);
+  stats.itemsDemoted = rootItemsDemoted_.load(std::memory_order_relaxed);
+  stats.slabsPromoted = rootSlabsPromoted_.load(std::memory_order_relaxed);
+  stats.itemsPromoted = rootItemsPromoted_.load(std::memory_order_relaxed);
+  stats.imageWriteFailures =
+      rootImageWriteFailures_.load(std::memory_order_relaxed);
+  stats.imagesDropped = rootImagesDropped_.load(std::memory_order_relaxed);
+  stats.itemsLostOnPromote =
+      rootItemsLostOnPromote_.load(std::memory_order_relaxed);
+  stats.imagesInNvm = rootNvmIndex_.numImages();
+  return stats;
+}
+
+template <typename CacheTrait>
+double CacheAllocator<CacheTrait>::getRootHotness(uint64_t rootHash) const {
+  return rootHotness_
+             ? rootHotness_->score(rootHash, util::getCurrentTimeSec())
+             : 0.0;
+}
+
+template <typename CacheTrait>
+bool CacheAllocator<CacheTrait>::coldestRootOfPool(PoolId pid,
+                                                   uint64_t& root,
+                                                   ClassId& cid) const {
+  const auto& pool = allocator_->getPool(pid);
+  const auto poolStats = pool.getStats();
+  const auto now = util::getCurrentTimeSec();
+  bool found = false;
+  for (const auto classId : poolStats.classIds) {
+    for (const auto& rootSlab :
+         pool.getAllocationClass(classId).getRootSlabs()) {
+      if (!found || rootHotness_->colder(rootSlab.first, root, now)) {
+        root = rootSlab.first;
+        cid = classId;
+        found = true;
+      }
+    }
+  }
+  return found;
+}
+
+template <typename CacheTrait>
+void CacheAllocator<CacheTrait>::moveRootSlabs() {
+  if (!rootSlabTierActive()) {
+    return;
+  }
+  const auto& cfg = config_.rootSlabTier;
+  auto freeSlabs = [this](PoolId pid) {
+    return allocator_->getPool(pid).getUnAllocatedSlabMemory() / Slab::kSize;
+  };
+
+  // keep free slabs in every pool by demoting the coldest roots
+  for (const auto pid : getRegularPoolIds()) {
+    for (uint32_t i = 0; i < cfg.maxSlabsPerIteration &&
+                         freeSlabs(pid) < cfg.minFreeSlabsPerPool;
+         ++i) {
+      uint64_t root = kNoRootHash;
+      ClassId cid = Slab::kInvalidClassId;
+      if (!coldestRootOfPool(pid, root, cid) ||
+          !demoteColdestRootSlab(pid, cid)) {
+        break;
+      }
+    }
+  }
+
+  // promote the hottest roots in navy while there is room, or a colder root
+  // in DRAM to give way
+  const auto now = util::getCurrentTimeSec();
+  for (uint32_t i = 0; i < cfg.maxSlabsPerIteration; ++i) {
+    uint64_t hot = kNoRootHash;
+    int8_t pid = 0;
+    if (!rootHotness_->hottest(rootNvmIndex_.roots(), kNoRootHash, now, hot) ||
+        !rootNvmIndex_.poolOf(hot, pid)) {
+      break;
+    }
+    uint64_t coldest = kNoRootHash;
+    ClassId cid = Slab::kInvalidClassId;
+    const bool hasRoom = freeSlabs(pid) > 0;
+    const bool canGiveWay = coldestRootOfPool(pid, coldest, cid) &&
+                            rootHotness_->colder(coldest, hot, now);
+    if (!hasRoom && !canGiveWay) {
+      break;
+    }
+    promoteRoot(hot, 1);
+  }
+
+  rootHotness_->prune(now, 0.01);
 }
 
 template <typename CacheTrait>
@@ -6362,6 +6835,7 @@ folly::IOBufQueue CacheAllocator<CacheTrait>::saveStateToIOBuf() {
 template <typename CacheTrait>
 bool CacheAllocator<CacheTrait>::stopWorkers(std::chrono::seconds timeout) {
   bool success = true;
+  success &= stopWorker("RootSlabMover", rootSlabMover_, timeout);
   success &= stopPoolOptimizer(timeout);
   success &= stopPoolRebalancer(timeout);
   success &= stopPoolResizer(timeout);

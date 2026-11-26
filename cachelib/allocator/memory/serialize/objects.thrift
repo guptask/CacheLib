@@ -44,6 +44,14 @@ struct SlabAllocatorObject {
   11: list<i32> advisedSlabIdxs;
 }
 
+// allocation state of one root prefix inside an allocation class.
+struct AllocationClassRootObject {
+  1: i64 rootHash; // to accommodate uint64_t
+  2: i32 currSlabIdx = -1;
+  3: i64 currOffset = 0;
+  4: objects.SListObject freedAllocationsObject;
+}
+
 struct AllocationClassObject {
   @thrift.AllowUnsafeRequiredFieldQualifier
   1: required byte classId;
@@ -60,6 +68,7 @@ struct AllocationClassObject {
   11: required list<i32> allocatedSlabIdxs;
   @thrift.AllowUnsafeRequiredFieldQualifier
   12: required list<i32> freeSlabIdxs;
+  13: list<AllocationClassRootObject> roots;
 }
 
 struct MemoryPoolObject {

@@ -27,12 +27,15 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "cachelib/allocator/nvmcache/AccessTimeMap.h"
 #include "cachelib/allocator/nvmcache/CacheApiWrapper.h"
 #include "cachelib/allocator/nvmcache/InFlightPuts.h"
+#include "cachelib/allocator/RootSlabImage.h"
 #include "cachelib/allocator/nvmcache/NavyConfig.h"
 #include "cachelib/allocator/nvmcache/NavySetup.h"
 #include "cachelib/allocator/nvmcache/NvmItem.h"
@@ -250,6 +253,39 @@ class NvmCache {
   //            cache and is temporary.
   WriteHandle peek(folly::StringPiece key);
 
+  // Slab images. An image holds the items of one evicted slab as one Navy
+  // object, see RootSlabImage.h.
+
+  // Serializes `item` and its chained items for an image record.
+  // @return false if the item can not be encoded or navy is disabled.
+  bool encodeForSlabImage(const Item& item, std::string& out);
+
+  // Stores `image`, built by SlabImageWriter, under `key`.
+  // @return false if navy rejected it or is disabled.
+  bool putSlabImage(folly::StringPiece key,
+                    folly::StringPiece image,
+                    PoolId pid);
+
+  // @return false if the image is not in navy.
+  bool getSlabImage(folly::StringPiece key, std::string& image);
+
+  void removeSlabImage(folly::StringPiece key);
+
+  // Rebuilds a DRAM item from an image record, in a slab of `rootHash`. The
+  // item is not inserted and is not nvm clean. Returns nullptr if it expired
+  // or can not be allocated.
+  WriteHandle createItemFromSlabImage(folly::StringPiece key,
+                                      folly::StringPiece payload,
+                                      uint64_t rootHash);
+
+  // Runs the item destructor for every record of an image.
+  void destroySlabImage(folly::StringPiece image, DestructorContext context);
+
+  // Called with the image key when navy evicts an image.
+  void setSlabImageDropCb(std::function<void(const std::string&)> cb) {
+    slabImageDropCb_ = std::move(cb);
+  }
+
   SampleItem getSampleItem();
 
   // safely shut down the cache. must be called after stopping all concurrent
@@ -382,7 +418,9 @@ class NvmCache {
   //
   // @param   return an item handle allocated and initialized to the right state
   //          based on the NvmItem
-  WriteHandle createItem(folly::StringPiece key, const NvmItem& nvmItem);
+  WriteHandle createItem(folly::StringPiece key,
+                         const NvmItem& nvmItem,
+                         uint64_t rootHash = kNoRootHash);
 
   // creates the item into IOBuf from NvmItem, if the item has chained items,
   // chained IOBufs will be created.
@@ -630,6 +668,8 @@ class NvmCache {
   ShmManager* shmManager_{nullptr};
 
   std::unique_ptr<cachelib::navy::AbstractCache> navyCache_;
+
+  std::function<void(const std::string&)> slabImageDropCb_;
 
   friend class tests::NvmCacheTest;
   FRIEND_TEST(CachelibAdminCoreTest, WorkingSetAnalysisLoggingTest);
@@ -922,9 +962,123 @@ typename NvmCache<C>::WriteHandle NvmCache<C>::peek(folly::StringPiece key) {
 }
 
 template <typename C>
+bool NvmCache<C>::encodeForSlabImage(const Item& item, std::string& out) {
+  if (!isEnabled() || item.isChainedItem()) {
+    return false;
+  }
+  const auto poolId =
+      static_cast<uint8_t>(cache_.getAllocInfo((void*)(&item)).poolId);
+  auto nvmItem = makeNvmItem(item, poolId);
+  if (!nvmItem) {
+    return false;
+  }
+  const auto iobuf = toIOBuf(std::move(nvmItem));
+  out.assign(reinterpret_cast<const char*>(iobuf.data()), iobuf.length());
+  return true;
+}
+
+template <typename C>
+bool NvmCache<C>::putSlabImage(folly::StringPiece key,
+                               folly::StringPiece image,
+                               PoolId pid) {
+  if (!isEnabled()) {
+    return false;
+  }
+  // wrapped in an NvmItem since navy inspects every value as one.
+  const Blob blob{static_cast<uint32_t>(image.size()), image};
+  const size_t bufSize = NvmItem::estimateVariableSize(blob);
+  auto iobuf = toIOBuf(std::unique_ptr<NvmItem>(
+      new (bufSize) NvmItem(pid, util::getCurrentTimeSec(), 0, blob)));
+  const auto val = folly::ByteRange{iobuf.data(), iobuf.length()};
+  return navyCache_->insert(HashedKey{key}, makeBufferView(val),
+                            static_cast<uint8_t>(pid), 0,
+                            util::getCurrentTimeSec()) == navy::Status::Ok;
+}
+
+template <typename C>
+bool NvmCache<C>::getSlabImage(folly::StringPiece key, std::string& image) {
+  if (!isEnabled()) {
+    return false;
+  }
+  navy::Buffer buf;
+  uint32_t lastAccessTimeSecs = 0;
+  if (navyCache_->lookup(HashedKey{key}, buf, lastAccessTimeSecs) !=
+      navy::Status::Ok) {
+    return false;
+  }
+  const auto blob = reinterpret_cast<const NvmItem*>(buf.data())->getBlob(0);
+  image.assign(blob.data.data(), blob.data.size());
+  return true;
+}
+
+template <typename C>
+void NvmCache<C>::removeSlabImage(folly::StringPiece key) {
+  if (isEnabled()) {
+    navyCache_->remove(HashedKey{key});
+  }
+}
+
+template <typename C>
+typename NvmCache<C>::WriteHandle NvmCache<C>::createItemFromSlabImage(
+    folly::StringPiece key, folly::StringPiece payload, uint64_t rootHash) {
+  const auto& nvmItem = *reinterpret_cast<const NvmItem*>(payload.data());
+  if (nvmItem.isExpired()) {
+    return nullptr;
+  }
+  auto it = createItem(key, nvmItem, rootHash);
+  if (it) {
+    // the image is gone once it is promoted, so no copy remains in navy.
+    it->unmarkNvmClean();
+  }
+  return it;
+}
+
+template <typename C>
+void NvmCache<C>::destroySlabImage(folly::StringPiece image,
+                                   DestructorContext context) {
+  if (!itemDestructor_) {
+    return;
+  }
+  SlabImageReader reader({image.data(), image.size()});
+  std::string_view key;
+  std::string_view payload;
+  while (reader.next(key, payload)) {
+    const auto& nvmItem = *reinterpret_cast<const NvmItem*>(payload.data());
+    auto iobuf = createItemAsIOBuf({key.data(), key.size()}, nvmItem);
+    if (!iobuf) {
+      continue;
+    }
+    auto& item = *reinterpret_cast<Item*>(iobuf->writableData());
+    auto chained = viewAsChainedAllocsRange(iobuf.get());
+    try {
+      itemDestructor_(
+          DestructorData{context, item, std::move(chained), nvmItem.poolId()});
+      stats().numNvmDestructorCalls.inc();
+    } catch (const std::exception& e) {
+      stats().numDestructorExceptions.inc();
+      XLOG_EVERY_N(INFO, 100)
+          << "Catch exception from user's item destructor: " << e.what();
+    }
+  }
+}
+
+template <typename C>
 void NvmCache<C>::evictCB(HashedKey hk,
                           navy::BufferView value,
                           navy::DestructorEvent event) {
+  if (isSlabImageKey({hk.key().data(), hk.key().size()})) {
+    // Removed is our own cleanup after a promotion.
+    if (event != cachelib::navy::DestructorEvent::Removed) {
+      if (slabImageDropCb_) {
+        slabImageDropCb_(hk.key().toString());
+      }
+      const auto& nvmItem = *reinterpret_cast<const NvmItem*>(value.data());
+      destroySlabImage(nvmItem.getBlob(0).data,
+                       DestructorContext::kEvictedFromNVM);
+    }
+    return;
+  }
+
   // invalidate any inflight lookup that is on flight since we are evicting it.
   invalidateFill(hk);
 
@@ -1433,7 +1587,7 @@ void NvmCache<C>::onGetComplete(GetCtx& ctx,
 
 template <typename C>
 typename NvmCache<C>::WriteHandle NvmCache<C>::createItem(
-    folly::StringPiece key, const NvmItem& nvmItem) {
+    folly::StringPiece key, const NvmItem& nvmItem, uint64_t rootHash) {
   const size_t numBufs = nvmItem.getNumBlobs();
   // parent item
   XDCHECK_GE(numBufs, 1u);
@@ -1444,7 +1598,7 @@ typename NvmCache<C>::WriteHandle NvmCache<C>::createItem(
   // size matches the pBlob's size
   auto it = CacheAPIWrapperForNvm<C>::allocateInternal(
       cache_, nvmItem.poolId(), key, pBlob.origAllocSize,
-      nvmItem.getCreationTime(), nvmItem.getExpiryTime());
+      nvmItem.getCreationTime(), nvmItem.getExpiryTime(), rootHash);
 
   if (!it) {
     return nullptr;

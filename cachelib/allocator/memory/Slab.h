@@ -51,6 +51,10 @@ namespace cachelib {
  * independantly by the SlabAllocator.
  */
 
+// Root prefix hash meaning "no root". Allocations without a root share slabs
+// that are not owned by any root.
+constexpr uint64_t kNoRootHash = 0;
+
 // identifier for the memory tier
 using TierId = int8_t;
 // identifier for the memory pool
@@ -136,6 +140,13 @@ struct CACHELIB_PACKED_ATTR SlabHeader {
   FOLLY_DISABLE_ADDRESS_SANITIZER uint32_t getAllocSize() const noexcept {
     return allocSize;
   }
+  // Root prefix hash owning this slab, or kNoRootHash.
+  FOLLY_DISABLE_ADDRESS_SANITIZER uint64_t getRootHash() const noexcept {
+    return rootHash;
+  }
+  FOLLY_DISABLE_ADDRESS_SANITIZER void setRootHash(uint64_t root) noexcept {
+    rootHash = root;
+  }
 
   // Initialize a freshly carved or reclaimed header so it belongs to `pid`.
   FOLLY_DISABLE_ADDRESS_SANITIZER void initialize(PoolId pid) noexcept {
@@ -143,6 +154,7 @@ struct CACHELIB_PACKED_ATTR SlabHeader {
     classId = Slab::kInvalidClassId;
     allocSize = 0;
     flags = 0;
+    rootHash = kNoRootHash;
   }
 
   // Clear pool/class/size info, e.g. when a slab is freed back to the
@@ -151,6 +163,7 @@ struct CACHELIB_PACKED_ATTR SlabHeader {
     poolId = Slab::kInvalidPoolId;
     classId = Slab::kInvalidClassId;
     allocSize = 0;
+    rootHash = kNoRootHash;
   }
 
   bool isAdvised() const noexcept {
@@ -183,6 +196,7 @@ struct CACHELIB_PACKED_ATTR SlabHeader {
   FOLLY_DISABLE_ADDRESS_SANITIZER void clearClassAndUnmark() noexcept {
     classId = Slab::kInvalidClassId;
     allocSize = 0;
+    rootHash = kNoRootHash;
     unSetFlag(SlabHeaderFlag::IS_MARKED_FOR_RELEASE);
   }
 
@@ -231,11 +245,15 @@ struct CACHELIB_PACKED_ATTR SlabHeader {
   uint8_t flags{0};
 
   // the allocation size of the allocation class. Useful for pointer
-  // compression. the current size of this struct is 1 + 1 + 1 + 4 = 7 bytes.
-  // This allocSize is accessed on every decompression of the
+  // compressed pointer. the current size of this struct is 1 + 1 + 1 + 4 + 8
+  // = 15 bytes. This allocSize is accessed on every decompression of the
   // compressed pointer. If the offset of this changes, use the benchmark to
   // figure out if it moves the needle by a big margin.
   uint32_t allocSize{0};
+
+  // root prefix hash of the allocations carved from this slab. Placed after
+  // allocSize so the offset of the hot fields above is unchanged.
+  uint64_t rootHash{kNoRootHash};
 };
 
 // Definition for slab based resizing and rebalancing.

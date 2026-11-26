@@ -304,10 +304,10 @@ bool MemoryPool::provision(const std::vector<uint32_t>& slabsDistribution) {
   return true;
 }
 
-void* MemoryPool::allocate(uint32_t size) {
+void* MemoryPool::allocate(uint32_t size, uint64_t rootHash) {
   auto& ac = getAllocationClassFor(size);
 
-  auto alloc = ac.allocate();
+  auto alloc = ac.allocate(rootHash);
   const auto allocSize = ac.getAllocSize();
   XDCHECK_GE(allocSize, size);
 
@@ -336,7 +336,7 @@ void* MemoryPool::allocate(uint32_t size) {
   // path Currently this would also serialize the slow paths of two different
   // allocation class ids that need slab to initiate an allocation.
   LockHolder l(lock_);
-  alloc = ac.allocate();
+  alloc = ac.allocate(rootHash);
   if (alloc != nullptr) {
     currAllocSize_ += allocSize;
     return alloc;
@@ -354,7 +354,7 @@ void* MemoryPool::allocate(uint32_t size) {
   }
 
   // add it to the allocation class and try to allocate.
-  alloc = ac.addSlabAndAllocate(slab);
+  alloc = ac.addSlabAndAllocate(slab, rootHash);
   XDCHECK_NE(nullptr, alloc);
   if (allSlabsAllocated()) {
     clearSlabCapsLocked();

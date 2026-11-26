@@ -96,6 +96,25 @@ struct CacheConfig : public JSONConfig {
   std::string cacheDir;
 
   uint64_t cacheSizeMB{0};
+
+  // Leading bytes of a key that identify its root prefix. When non-zero every
+  // item is allocated into slabs owned by the hash of that prefix (a shorter
+  // key uses all of it), and lookups go through findWithRoot.
+  uint64_t rootPrefixLen{0};
+
+  // If non-zero, the prefix hashes fold into this many distinct roots.
+  // Every root owns at least one slab of each allocation class it uses, so a
+  // small cache needs few roots.
+  uint64_t rootCount{0};
+
+  // Evict the slabs of the coldest root to navy and promote them back, see
+  // RootSlabTierConfig. Needs rootPrefixLen and nvmCacheSizeMB.
+  bool enableRootSlabTier{false};
+  uint64_t rootHotnessHalfLifeSecs{600};
+  uint64_t rootSlabWorkerIntervalMs{0};
+  uint64_t rootMinFreeSlabsPerPool{1};
+  uint64_t rootMaxSlabsPerIteration{2};
+
   uint64_t poolRebalanceIntervalSec{0};
   std::string rebalanceStrategy;
   uint64_t rebalanceMinSlabs{1};

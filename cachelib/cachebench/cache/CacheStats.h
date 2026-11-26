@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "cachelib/allocator/RootSlabImage.h"
 #include "cachelib/allocator/memory/MemoryAllocatorStats.h"
 #include "cachelib/allocator/memory/Slab.h"
 #include "cachelib/cachebench/cache/StatsBase.h"
@@ -233,6 +234,10 @@ class Stats : public StatsBase {
 
   std::map<PoolId, std::map<ClassId, ACStats>> allocationClassStats;
 
+  // root slab tier counters, only set when the tier is enabled.
+  bool rootTierEnabled{false};
+  RootSlabTierStats rootTier;
+
   // populate the counters related to nvm usage. Cache implementation can decide
   // what to populate since not all of those are interesting when running
   // cachebench.
@@ -262,6 +267,15 @@ class Stats : public StatsBase {
 
     numEvictions += other.numEvictions;
     numItems += other.numItems;
+    rootTierEnabled = rootTierEnabled || other.rootTierEnabled;
+    rootTier.slabsDemoted += other.rootTier.slabsDemoted;
+    rootTier.itemsDemoted += other.rootTier.itemsDemoted;
+    rootTier.slabsPromoted += other.rootTier.slabsPromoted;
+    rootTier.itemsPromoted += other.rootTier.itemsPromoted;
+    rootTier.imageWriteFailures += other.rootTier.imageWriteFailures;
+    rootTier.imagesDropped += other.rootTier.imagesDropped;
+    rootTier.itemsLostOnPromote += other.rootTier.itemsLostOnPromote;
+    rootTier.imagesInNvm += other.rootTier.imagesInNvm;
     evictAttempts += other.evictAttempts;
     allocAttempts += other.allocAttempts;
     allocFailures += other.allocFailures;
@@ -359,6 +373,22 @@ class Stats : public StatsBase {
                        pctFn(numEvictions, evictAttempts))
         << std::endl;
     out << fmt::format("RAM Evictions : {}", numEvictions) << std::endl;
+
+    if (rootTierEnabled) {
+      out << fmt::format(
+                 "Root Tier     : slabs demoted {} promoted {}, items "
+                 "demoted {} promoted {}, images in NVM {}",
+                 rootTier.slabsDemoted, rootTier.slabsPromoted,
+                 rootTier.itemsDemoted, rootTier.itemsPromoted,
+                 rootTier.imagesInNvm)
+          << std::endl;
+      out << fmt::format(
+                 "Root Tier     : image write failures {} dropped by navy {} "
+                 "items lost on promote {}",
+                 rootTier.imageWriteFailures, rootTier.imagesDropped,
+                 rootTier.itemsLostOnPromote)
+          << std::endl;
+    }
 
     auto foreachAC = [](const auto& map, auto cb) {
       for (auto& pidStat : map) {
